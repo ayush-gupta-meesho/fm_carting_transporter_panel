@@ -552,7 +552,7 @@ function setHeader(v){
   var name=v.name||'Transporter';
   var initials=name.split(/\s+/).map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
   // topbar
-  var tbName=document.querySelector('.topbar .tb-r span'); if(tbName) tbName.textContent=name;
+  var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent=name;
   var tbAv=document.querySelector('.topbar .tb-avatar'); if(tbAv) tbAv.textContent=initials;
   // vhead
   var t=document.querySelector('.vh-title'); if(t) t.textContent=name;
