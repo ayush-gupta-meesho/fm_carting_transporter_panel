@@ -1,0 +1,6 @@
+contract_id,vendor_oracle_id,vendor_name,cluster,vehicle_size,hours_slab,no_of_vehicles,total_km_slab,fixed_monthly_value,ex_km_rate,contract_start_date,contract_end_date,contract_status
+RJK7-4521-19186-20260701-JUL,ORC-4521,Rajkot Movers Pvt Ltd,Rajkot,7ft,12hr,3,7000,260000,20,2026-07-01,2026-07-31,Active
+RJK10-4521-19186-20260701-JUL,ORC-4521,Rajkot Movers Pvt Ltd,Rajkot,10ft,24hr,2,3200,96000,20,2026-07-01,2026-07-31,Active
+MOR7-4521-19186-20260701-JUL,ORC-4521,Rajkot Movers Pvt Ltd,Morbi,7ft,12hr,2,4000,100000,18,2026-07-01,2026-07-31,Active
+RJK22-9902-30011-20260701-JUL,ORC-9902,Saurashtra Logistics,Rajkot,22ft,12hr,2,4400,210000,32,2026-07-01,2026-07-31,Active
+RJK7-7783-40022-20260701-JUL,ORC-7783,Kutch Transport,Rajkot,7ft,12hr,2,4000,120000,20,2026-07-01,2026-07-31,Active

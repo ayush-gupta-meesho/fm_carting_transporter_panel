@@ -1,0 +1,6 @@
+email,vendor_oracle_id,vendor_name,role,cluster_scope,active
+vendor1@example.com,ORC-4521,Rajkot Movers Pvt Ltd,vendor,,Yes
+vendor2@example.com,ORC-9902,Saurashtra Logistics,vendor,,Yes
+vendor3@example.com,ORC-7783,Kutch Transport,vendor,,Yes
+disabled@example.com,ORC-4521,Rajkot Movers Pvt Ltd,vendor,,No
+ground.ops@meesho.com,,,ground,Rajkot,Yes

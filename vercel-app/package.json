@@ -1,0 +1,10 @@
+{
+  "name": "valmo-transporter-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VALMO Transporter Panel — public (Vercel) frontend + API. Reads pre-scoped data from Upstash; Meesho SMTP for OTP.",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "nodemailer": "^6.9.14"
+  }
+}

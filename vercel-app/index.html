@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VALMO Transporter Portal</title>
+<style>
+:root{
+  --navy:#123A6B; --navy-deep:#0E2E56; --cyan:#4FC3E8; --blue:#1F8FD0;
+  --ink:#1A2A3A; --muted:#6B7C8F; --line:#E2E8F0; --bg:#F4F7FB; --white:#fff;
+  --green:#1E7E34; --greenbg:#E6F5EC; --amber:#B77503; --amberbg:#FFF3DE;
+  --red:#C0392B; --redbg:#FBEDEB; --violet:#6B4EA8; --violetbg:#F0EBFA;
+}
+body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font-size:13px;}
+
+/* App shell */
+.app{display:flex;min-height:100vh;}
+.side{width:62px;background:var(--navy-deep);flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:14px;gap:22px;}
+.side .logo{width:40px;height:40px;border-radius:9px;background:var(--navy);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--cyan);border:1.5px solid var(--cyan);}
+.side .ico{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#9DB4CF;cursor:pointer;}
+.side .ico.active{background:var(--navy);color:var(--cyan);}
+.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+
+/* Top bar */
+.topbar{background:var(--navy);color:#fff;padding:11px 22px;display:flex;justify-content:space-between;align-items:center;}
+.topbar .tb-l{display:flex;align-items:center;gap:12px;}
+.topbar .tb-logo{font-size:17px;font-weight:700;letter-spacing:1px;}
+.topbar .tb-logo .box{color:var(--cyan);}
+.topbar .tb-tag{font-size:10px;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:10px;color:#DCEAF6;}
+.topbar .tb-r{display:flex;align-items:center;gap:10px;font-size:11.5px;color:#CFE0F0;}
+.topbar .tb-avatar{width:30px;height:30px;border-radius:50%;background:var(--cyan);color:var(--navy);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;}
+
+/* Content */
+.content{padding:18px 22px 40px 22px;overflow-y:auto;}
+
+/* Global info header */
+.ginfo{background:#EAF4FB;border:1px solid #C5E0F0;border-left:3px solid var(--blue);border-radius:7px;padding:9px 14px;font-size:11.5px;color:#1A4A6B;margin-bottom:16px;display:flex;align-items:center;gap:8px;}
+
+/* Breadcrumb */
+.crumb{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted);margin-bottom:14px;}
+.crumb a{color:var(--blue);cursor:pointer;text-decoration:none;font-weight:600;}
+.crumb .sep{color:#B8C4D0;}
+
+/* Vendor header card */
+.vhead{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;}
+.vhead .vh-title{font-size:16px;font-weight:700;color:var(--navy);}
+.vhead .vh-sub{font-size:11.5px;color:var(--muted);margin-top:2px;}
+.vh-stats{display:flex;gap:26px;}
+.vh-stat .vs-num{font-size:19px;font-weight:700;color:var(--navy);}
+.vh-stat .vs-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+
+/* Filters */
+.filters{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+.filt{background:var(--white);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:11.5px;color:var(--ink);display:flex;align-items:center;gap:7px;cursor:pointer;font-family:'Poppins';}
+.filt select{border:none;background:none;font-family:'Poppins';font-size:11.5px;color:var(--ink);cursor:pointer;outline:none;}
+.filt .fl-lbl{color:var(--muted);font-size:10.5px;}
+.filt-search{flex:1;max-width:220px;}
+.filt-search input{border:none;outline:none;font-family:'Poppins';font-size:11.5px;width:100%;}
+
+/* Contract cards (L1) */
+.contract-list{display:flex;flex-direction:column;gap:11px;}
+.ccard{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:15px 18px;cursor:pointer;transition:all .15s;display:flex;justify-content:space-between;align-items:center;}
+.ccard:hover{border-color:var(--blue);box-shadow:0 3px 14px rgba(31,143,208,.12);transform:translateY(-1px);}
+.ccard .cc-l{display:flex;align-items:center;gap:16px;}
+.cc-badge{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;}
+.cc-badge .ccb-sz{font-size:14px;font-weight:700;line-height:1;}
+.cc-badge .ccb-u{font-size:8px;opacity:.85;}
+.cc-info .cc-name{font-size:14px;font-weight:700;color:var(--navy);}
+.cc-info .cc-meta{font-size:11px;color:var(--muted);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap;}
+.cc-info .cc-meta b{color:var(--ink);font-weight:600;}
+.cc-id{font-size:10px;color:var(--muted);margin-top:4px;font-family:monospace;}
+.cc-r{display:flex;align-items:center;gap:22px;}
+.cc-prog{width:180px;}
+.cc-prog .ccp-top{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px;}
+.cc-prog .ccp-top b{color:var(--navy);font-weight:700;}
+.prog-track{height:8px;background:#EDF1F6;border-radius:5px;overflow:hidden;display:flex;}
+.prog-fill{height:100%;background:var(--blue);}
+.prog-over{height:100%;background:var(--amber);}
+.cc-val{text-align:right;}
+.cc-val .ccv-amt{font-size:16px;font-weight:700;color:var(--navy);}
+.cc-val .ccv-lbl{font-size:9.5px;color:var(--muted);text-transform:uppercase;}
+.cc-arrow{color:var(--blue);font-size:18px;}
+
+/* Tabs (L2) */
+.l2tabs{display:flex;gap:0;border-bottom:2px solid var(--line);margin-bottom:16px;}
+.l2tab{padding:10px 20px;font-size:12.5px;font-weight:700;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;}
+.l2tab.active{color:var(--navy);border-bottom-color:var(--cyan);}
+
+/* Contract summary strip */
+.csum{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin-bottom:16px;}
+.csum-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px;}
+.csum-title{font-size:15px;font-weight:700;color:var(--navy);}
+.csum-id{font-size:10.5px;color:var(--muted);font-family:monospace;margin-top:2px;}
+.csum-metrics{display:flex;gap:28px;flex-wrap:wrap;}
+.csm .csm-n{font-size:17px;font-weight:700;color:var(--navy);}
+.csm .csm-l{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+/* grouped slab bar */
+.slab-wrap{margin-top:6px;}
+.slab-top{display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px;}
+.slab-top .st-l{color:var(--muted);}
+.slab-top .st-l b{color:var(--navy);}
+.slab-track{height:14px;background:#EDF1F6;border-radius:8px;overflow:hidden;display:flex;position:relative;}
+.slab-base{height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan));}
+.slab-over{height:100%;background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 5px,#C98A2E 5px,#C98A2E 10px);}
+.slab-legend{display:flex;gap:16px;margin-top:8px;font-size:10.5px;color:var(--muted);}
+.slab-legend .sl-dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:middle;}
+
+/* Vehicle table */
+.vtable,.ttable{width:100%;border-collapse:collapse;background:var(--white);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:12px;}
+.vtable th,.ttable th{background:#F7FAFD;color:var(--muted);text-align:left;padding:10px 14px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--line);}
+.vtable td,.ttable td{padding:11px 14px;border-bottom:1px solid #EEF2F7;}
+.vtable tr:last-child td,.ttable tr:last-child td{border-bottom:none;}
+.vrow{cursor:pointer;transition:background .12s;}
+.vrow:hover{background:#F7FBFE;}
+.vname-cell{display:flex;align-items:center;gap:9px;}
+.vdot{width:32px;height:32px;border-radius:8px;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;}
+.vdot.repl{background:var(--violet);}
+
+/* Badges */
+.badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:10px;font-weight:700;}
+.b-default{background:#E7F0FA;color:var(--navy);}
+.b-repl{background:var(--violetbg);color:var(--violet);}
+.b-regular{background:#E7F0FA;color:var(--blue);}
+.b-adhoc{background:var(--amberbg);color:var(--amber);}
+.b-green{background:var(--greenbg);color:var(--green);}
+.b-amber{background:var(--amberbg);color:var(--amber);}
+.b-rto{background:#EEF1F5;color:var(--muted);}
+.tag-default-reg{background:#EAF0F7;color:#3A6BA8;}
+.tag-repl-reg{background:var(--violetbg);color:var(--violet);}
+
+/* sub-tabs */
+.subtabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.subtab{padding:7px 15px;border-radius:20px;font-size:11.5px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--white);color:var(--muted);}
+.subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+.subtab .cnt{opacity:.7;font-size:10px;margin-left:3px;}
+
+/* trip status text */
+.st-pending{color:var(--amber);font-weight:700;font-size:11px;}
+.st-confirmed{color:var(--green);font-weight:700;font-size:11px;}
+.st-win{font-size:10px;color:var(--muted);margin-top:2px;}
+
+/* action buttons */
+.btn{font-family:'Poppins';border:none;border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer;}
+.btn-primary{background:var(--navy);color:#fff;}
+.btn-primary:hover{background:var(--navy-deep);}
+.btn-link{background:none;color:var(--blue);padding:4px 0;margin-top:4px;display:block;}
+.btn-ghost{background:#fff;border:1px solid var(--line);color:var(--ink);}
+
+.km-cell b{font-size:13px;color:var(--navy);}
+.km-cell .km-sub{font-size:10px;color:var(--muted);}
+.adhoc-amt{font-size:13px;font-weight:700;color:var(--amber);}
+
+.route-nodes{display:flex;align-items:center;gap:4px;flex-wrap:wrap;}
+.rnode{background:#EEF3F8;color:var(--navy);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;}
+.rnode.mid{background:#F0F0F5;color:var(--muted);cursor:help;}
+.rarr{color:#B8C4D0;font-size:11px;}
+
+/* Modal (dispute) */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(14,46,86,.45);z-index:1000;justify-content:center;align-items:flex-start;padding:30px 20px;overflow-y:auto;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--white);border-radius:12px;width:100%;max-width:1080px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+.modal-head{background:var(--navy);color:#fff;padding:14px 22px;display:flex;justify-content:space-between;align-items:center;}
+.modal-head .mh-title{font-size:15px;font-weight:700;}
+.modal-head .mh-close{cursor:pointer;font-size:20px;color:#CFE0F0;background:none;border:none;}
+.modal-body{padding:20px 22px;max-height:72vh;overflow-y:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+.disp-cats{display:flex;flex-direction:column;gap:9px;}
+.disp-cat-title{font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px;}
+.disp-check{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;cursor:pointer;}
+.disp-check input{width:15px;height:15px;accent-color:var(--blue);}
+.disp-check.checked{border-color:var(--blue);background:#F5FAFE;}
+.disp-detail{display:flex;flex-direction:column;gap:14px;}
+.disp-panel{border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:none;}
+.disp-panel.show{display:block;}
+.disp-panel .dp-title{font-size:11.5px;font-weight:700;color:var(--navy);margin-bottom:9px;}
+.dp-row{display:flex;gap:10px;}
+.dp-field{flex:1;}
+.dp-field label{font-size:9.5px;color:var(--muted);display:block;margin-bottom:3px;}
+.dp-field input,.dp-field select{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-family:'Poppins';font-size:11.5px;outline:none;}
+.dp-field input:focus,.dp-field select:focus{border-color:var(--blue);}
+.dp-field input[readonly]{background:#F5F7FA;color:var(--muted);}
+.modal-foot{border-top:1px solid var(--line);padding:14px 22px;display:flex;justify-content:space-between;align-items:center;background:#FAFCFE;}
+.upload-note{font-size:10.5px;color:var(--amber);background:var(--amberbg);padding:6px 11px;border-radius:6px;}
+.foot-btns{display:flex;gap:10px;}
+
+.hidden{display:none !important;}
+.page-view{display:none;}
+.page-view.active{display:block;}
+
+.mini-note{font-size:10.5px;color:var(--muted);font-style:italic;margin:6px 0 14px 0;}
+.dz{border:1.5px dashed var(--line);border-radius:8px;padding:14px;text-align:center;font-size:11px;color:var(--muted);cursor:pointer;}
+.dz:hover{border-color:var(--blue);color:var(--blue);}
+
+/* Back button */
+.backbtn{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 13px;font-size:11.5px;font-weight:600;color:var(--navy);cursor:pointer;font-family:'Poppins';margin-bottom:14px;}
+.backbtn:hover{border-color:var(--blue);color:var(--blue);}
+
+/* Action pending strip */
+.action-strip{background:linear-gradient(90deg,#FFF3DE,#FFF9EF);border:1px solid #F0D9A8;border-left:3px solid var(--amber);border-radius:9px;padding:13px 18px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;transition:all .15s;}
+.action-strip:hover{box-shadow:0 3px 12px rgba(183,117,3,.14);}
+.as-l{display:flex;align-items:center;gap:12px;}
+.as-ico{width:38px;height:38px;border-radius:9px;background:var(--amber);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+.as-txt .as-t{font-size:13.5px;font-weight:700;color:#7A4E02;}
+.as-txt .as-s{font-size:11px;color:#9A6A1A;margin-top:1px;}
+.as-cta{background:var(--amber);color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:'Poppins';}
+
+/* Breakup table (contract level) */
+.breakup{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+.breakup th{background:#F7FAFD;color:var(--muted);text-align:left;padding:8px 14px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--line);}
+.breakup td{padding:9px 14px;border-bottom:1px solid #EEF2F7;}
+.breakup tr:last-child td{border-bottom:none;font-weight:700;background:#FAFCFE;}
+.breakup .bk-cur{color:var(--navy);font-weight:700;}
+
+/* Contract ID pill in trip table */
+.cid-pill{font-family:monospace;font-size:9.5px;background:#EEF3F8;color:#3A6BA8;padding:2px 7px;border-radius:5px;display:inline-block;}
+
+/* KM counter emphasis */
+.kmcounter{color:var(--cyan);}
+
+/* global mis context note */
+.mis-context{background:#EAF4FB;border:1px solid #C5E0F0;border-radius:7px;padding:8px 13px;font-size:11px;color:#1A4A6B;margin-bottom:12px;}
+
+/* Replacement tag polish */
+.tag-repl-reg{background:var(--violetbg);color:var(--violet);border:1px solid #D6C7EF;}
+.repl-for{font-size:10px;color:var(--violet);margin-top:4px;font-weight:600;}
+.repl-for b{color:var(--navy);font-weight:700;}
+.breakup-note{font-size:11px;color:var(--muted);margin-top:9px;line-height:1.6;padding:9px 13px;background:#F7FAFD;border-radius:7px;}
+.breakup-note b{color:var(--navy);}
+
+/* Subtabs row with download button */
+.subtabs-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;}
+.subtabs-row .subtabs{margin-bottom:0;}
+.download-btn{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 16px;font-size:11.5px;font-weight:700;color:var(--navy);cursor:pointer;font-family:'Poppins';display:flex;align-items:center;gap:6px;}
+.download-btn:hover{border-color:var(--blue);color:var(--blue);}
+
+/* Bulk confirm bar */
+.bulkbar{position:sticky;bottom:0;background:#fff;border:1px solid var(--line);border-top:2px solid var(--navy);border-radius:0 0 10px 10px;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-top:-1px;box-shadow:0 -3px 12px rgba(0,0,0,.06);}
+.bulkbar span{font-size:12.5px;font-weight:700;color:var(--navy);}
+
+.slab-asof{font-size:10px;color:var(--muted);margin-top:7px;font-style:italic;}
+
+
+
+/* ---- login screen ---- */
+#loginScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);}
+.login-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:34px 30px;width:360px;box-shadow:0 10px 40px rgba(18,58,107,.10);}
+.login-logo{font-weight:800;font-size:22px;color:var(--navy);letter-spacing:1px;margin-bottom:4px;}
+.login-logo .box{background:var(--navy);color:#fff;padding:1px 6px;border-radius:5px;margin-left:1px;}
+.login-tag{color:var(--muted);font-size:12px;margin-bottom:22px;}
+.login-card label{display:block;font-size:11px;font-weight:700;color:var(--ink);margin:0 0 6px;}
+.login-card input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit;}
+.login-card input:focus{outline:none;border-color:var(--blue);}
+.login-card .btn-primary{width:100%;justify-content:center;margin-top:16px;padding:12px;font-size:13px;border:none;cursor:pointer;border-radius:8px;background:var(--navy);color:#fff;font-weight:700;}
+.login-card .btn-primary:disabled{opacity:.55;cursor:default;}
+.login-msg{font-size:11.5px;margin-top:12px;min-height:16px;}
+.login-msg.err{color:var(--red);} .login-msg.ok{color:var(--green);}
+.login-hint{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5;}
+.link-btn{background:none;border:none;color:var(--blue);font-size:11.5px;cursor:pointer;padding:0;margin-top:10px;font-weight:600;}
+.otp-input{letter-spacing:8px;text-align:center;font-size:22px !important;font-weight:700;}
+.ro-pill{background:var(--violetbg);color:var(--violet);font-size:10px;font-weight:700;padding:3px 9px;border-radius:11px;margin-right:10px;}
+.tb-logout{background:none;border:1px solid var(--line);color:var(--muted);font-size:11px;font-weight:600;padding:5px 11px;border-radius:7px;cursor:pointer;margin-left:12px;}
+.app-loading{display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-size:14px;}
+
+</style>
+</head><body>
+
+<!-- ══ LOGIN SCREEN ══ -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">VAL<span class="box">MO</span></div>
+    <div class="login-tag">Transporter Portal — secure sign in</div>
+
+    <!-- Step 1: email -->
+    <div id="stepEmail">
+      <label>Registered email</label>
+      <input id="emailInput" type="email" placeholder="you@company.com" autocomplete="email"
+             onkeydown="if(event.key==='Enter')sendCode()"/>
+      <button class="btn-primary" id="sendBtn" onclick="sendCode()">Send login code</button>
+      <div class="login-hint">We'll email you a 6-digit code. Only emails registered by VALMO ops can sign in.</div>
+    </div>
+
+    <!-- Step 2: OTP -->
+    <div id="stepOtp" style="display:none;">
+      <label>Enter the 6-digit code sent to <b id="otpEmailLabel"></b></label>
+      <input id="otpInput" class="otp-input" inputmode="numeric" maxlength="6" placeholder="______"
+             onkeydown="if(event.key==='Enter')verifyCode()"/>
+      <button class="btn-primary" id="verifyBtn" onclick="verifyCode()">Verify &amp; sign in</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;">
+        <button class="link-btn" id="resendBtn" onclick="resendCode()" disabled style="margin-top:0;">Resend code</button>
+        <button class="link-btn" onclick="resetLogin()" style="margin-top:0;">← Use a different email</button>
+      </div>
+    </div>
+
+    <div class="login-msg" id="loginMsg"></div>
+  </div>
+</div>
+
+<!-- ══ APP SCREEN ══ -->
+<div id="appScreen" style="display:none;">
+
+
+
+<div class="app">
+  <div class="main">
+    <!-- Topbar -->
+    <div class="topbar">
+      <div class="tb-l">
+        <div class="tb-logo">VAL<span class="box">MO</span></div>
+        <div class="tb-tag">Transporter Portal</div>
+      </div>
+      <div class="tb-r">
+        <span class="ro-pill">Read-only</span>
+        <span>Vendor</span>
+        <div class="tb-avatar">V</div>
+        <button class="tb-logout" onclick="logoutFn()">Sign out</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="ginfo">ℹ️ Each trip becomes visible here <b style="margin:0 4px;">one day (24 hours) after it is completed</b>, once it has been validated. A trip completed today will appear tomorrow.</div>
+
+      <!-- ═══ L1 VIEW ═══ -->
+      <div class="page-view active" id="view-l1">
+        <div class="vhead">
+          <div>
+            <div class="vh-title">Vendor_1 Logistics Pvt Ltd</div>
+            <div class="vh-sub">Oracle ID: ORC-4521 &nbsp;·&nbsp; Contract Duration: <b>15 Jul – 31 Jul 2026</b> &nbsp;·&nbsp; Active</div>
+          </div>
+          <div class="vh-stats">
+            <div class="vh-stat"><div class="vs-num">3</div><div class="vs-lbl">Total Contracts</div></div>
+            <div class="vh-stat"><div class="vs-num kmcounter">14,480</div><div class="vs-lbl">Actual KM Counter (MTD)</div></div>
+            <div class="vh-stat"><div class="vs-num">2</div><div class="vs-lbl">Clusters</div></div>
+          </div>
+        </div>
+
+        <!-- Action pending strip -> opens global MIS -->
+        <div class="action-strip" onclick="showGlobalMIS()">
+          <div class="as-l">
+            <div class="as-ico">🔔</div>
+            <div class="as-txt">
+              <div class="as-t" id="asCount">You have trips pending confirmation</div>
+              <div class="as-s">Review and confirm or raise disputes before the dispute window closes.</div>
+            </div>
+          </div>
+          <button class="as-cta">Review Pending Trips →</button>
+        </div>
+
+        <div class="filters">
+          <div class="filt filt-search">🔍 <input id="l1Search" oninput="renderContracts()" placeholder="Search contract / cluster..."/></div>
+          <div class="filt"><span class="fl-lbl">Cluster:</span>
+            <select id="l1Cluster" onchange="renderContracts()"><option value="all">All</option><option>Surat</option><option>Ahmedabad</option></select>
+          </div>
+          <div class="filt"><span class="fl-lbl">Vehicle Size:</span>
+            <select id="l1Size" onchange="renderContracts()"><option value="all">All</option><option>7ft</option><option>10ft</option><option>22ft</option></select>
+          </div>
+          <div class="filt"><span class="fl-lbl">Hours:</span>
+            <select id="l1Hours" onchange="renderContracts()"><option value="all">All</option><option>12hr</option><option>24hr</option></select>
+          </div>
+        </div>
+
+        <div class="contract-list" id="contractList"></div>
+      </div>
+
+      <!-- ═══ GLOBAL MIS VIEW ═══ -->
+      <div class="page-view" id="view-mis">
+        <button class="backbtn" onclick="showL1()">← Back to Contracts</button>
+        <div class="csum" style="padding:14px 20px;">
+          <div class="csum-title">All Trips — Pending Actions Across Contracts</div>
+          <div class="csum-id">Confirm or dispute each trip. The Contract ID column shows which contract each trip belongs to.</div>
+        </div>
+        <div id="misPanel"></div>
+      </div>
+
+      <!-- ═══ L2 VIEW ═══ -->
+      <div class="page-view" id="view-l2">
+        <button class="backbtn" onclick="showL1()">← Back to Contracts</button>
+
+        <div class="csum">
+          <div class="csum-top">
+            <div>
+              <div class="csum-title" id="csumTitle"></div>
+              <div class="csum-id" id="csumId"></div>
+            </div>
+            <div class="csum-metrics">
+              <div class="csm"><div class="csm-n" id="csmVeh"></div><div class="csm-l">Vehicles</div></div>
+              <div class="csm"><div class="csm-n" id="csmKm"></div><div class="csm-l">Actual KMs Run</div></div>
+            </div>
+          </div>
+
+          <div class="slab-wrap">
+            <div class="slab-top">
+              <span class="st-l" id="slabLabel"></span>
+              <span class="st-l" id="slabOver"></span>
+            </div>
+            <div class="slab-track">
+              <div class="slab-base" id="slabBase"></div>
+              <div class="slab-over" id="slabOverBar"></div>
+            </div>
+            <div class="slab-legend">
+              <span><span class="sl-dot" style="background:var(--blue)"></span>KMs within Total KM Slab</span>
+              <span><span class="sl-dot" style="background:var(--amber)"></span>Extra KMs @ ₹<span id="slabRate"></span>/km</span>
+            </div>
+            <div class="slab-asof" id="slabAsOf"></div>
+          </div>
+
+          <!-- Breakup table from photo -->
+          <table class="breakup" id="breakupTable"></table>
+          <div class="breakup-note" id="breakupNote"></div>
+        </div>
+
+        <div class="l2tabs">
+          <div class="l2tab active" onclick="showL2Tab('veh')" id="tab-veh">Vehicle Level Details</div>
+          <div class="l2tab" onclick="showL2Tab('trip')" id="tab-trip">Trip Level Data (MIS)</div>
+        </div>
+
+        <!-- TAB 1: Vehicle level -->
+        <div id="l2-veh">
+          <div class="mis-context"><b>Default vehicles</b> are the vehicles locked on Day 1 of the contract — they stay fixed for the whole contract period. A <b>replacement</b> vehicle stands in for a default when one is unavailable, and its regular KMs are aggregated back to the default vehicle it replaced. Only <b>regular trip KMs</b> are aggregated at the vehicle level; adhoc trips are billed separately and shown with their amount in the trip view.</div>
+          <div class="filters">
+            <div class="filt"><span class="fl-lbl">Date:</span>
+              <select><option>Jul 1–31, 2026</option><option>This Week</option></select>
+            </div>
+            <div class="filt"><span class="fl-lbl">Vehicle Type:</span>
+              <select id="vehTypeFilter" onchange="renderVehicles()"><option value="all">All</option><option value="default">Default only</option><option value="repl">Replacement only</option></select>
+            </div>
+            <div class="mini-note" style="margin:0 0 0 6px;">Filtering a default vehicle shows its own trips <b>and</b> trips where a replacement stood in for it.</div>
+          </div>
+          <table class="vtable">
+            <thead><tr>
+              <th>Vehicle</th><th>Tag</th><th>Regular KMs</th><th>Regular Trips</th><th>Adhoc Trips</th><th>Trips Till Date</th><th></th>
+            </tr></thead>
+            <tbody id="vehBody"></tbody>
+          </table>
+        </div>
+
+        <!-- TAB 2: Trip level -->
+        <div id="l2-trip" class="hidden">
+          <div id="tripPanelContract"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+</div>
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+ *  CLIENT  —  data is fetched from the Vercel API (/api/*) over fetch(); cookie session.
+ *  and scoped server-side to the logged-in vendor. This UI is READ-ONLY.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+// data globals — populated by getVendorData()
+var CONTRACTS = [], VEHICLES = {}, TRIPS = {};
+var LOGIN_EMAIL = '';
+
+/* ---------------- derived helpers (from Contract tiers) ---------------- */
+function cNVeh(c){ return c.tiers.reduce(function(s,r){return s+r.count;},0); }
+function cSlabKm(c){ return c.tiers.reduce(function(s,r){return s+r.count*r.slabPerVeh;},0); }
+function cFixedValue(c){ return c.tiers.reduce(function(s,r){return s+r.count*r.valuePerVeh;},0); }
+
+var money = function(n){ return '₹' + Number(n||0).toLocaleString('en-IN'); };
+function contractById(id){ return CONTRACTS.find(function(c){return c.id===id;}); }
+function vehNoOf(cid, vname){ var v=(VEHICLES[cid]||[]).find(function(x){return x.name===vname;}); return v?v.no:vname; }
+function allTrips(){ var a=[]; CONTRACTS.forEach(function(c){ (TRIPS[c.id]||[]).forEach(function(t){ a.push(Object.assign({},t,{cid:c.id})); }); }); return a; }
+function pendingCount(){ return allTrips().filter(function(t){return t.status==='pending';}).length; }
+
+/* ══════════════ AUTH ══════════════ */
+function _msg(text, cls){ var m=document.getElementById('loginMsg'); m.textContent=text||''; m.className='login-msg'+(cls?(' '+cls):''); }
+async function _post(url, body){
+  var r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  try { return await r.json(); } catch(e){ return {ok:false, error:'Unexpected server response.'}; }
+}
+
+async function sendCode(){
+  var email=(document.getElementById('emailInput').value||'').trim().toLowerCase();
+  if(!email){ _msg('Please enter your email.','err'); return; }
+  var btn=document.getElementById('sendBtn'); btn.disabled=true; btn.textContent='Sending…'; _msg('');
+  try{
+    var r=await _post('/api/request-otp',{email:email});
+    btn.disabled=false; btn.textContent='Send login code';
+    if(r&&r.ok){
+      LOGIN_EMAIL=email;
+      document.getElementById('otpEmailLabel').textContent=email;
+      document.getElementById('stepEmail').style.display='none';
+      document.getElementById('stepOtp').style.display='block';
+      document.getElementById('otpInput').focus();
+        startResendCountdown(30);
+      _msg('Code sent. Check your inbox (and spam).','ok');
+    } else { _msg((r&&r.error)||'Could not send code.','err'); }
+  }catch(e){ btn.disabled=false; btn.textContent='Send login code'; _msg('Network error. Please retry.','err'); }
+}
+
+async function verifyCode(){
+  var code=(document.getElementById('otpInput').value||'').trim();
+  if(code.length!==6){ _msg('Enter the 6-digit code.','err'); return; }
+  var btn=document.getElementById('verifyBtn'); btn.disabled=true; btn.textContent='Verifying…'; _msg('');
+  try{
+    var r=await _post('/api/verify-otp',{email:LOGIN_EMAIL, code:code});
+    btn.disabled=false; btn.textContent='Verify & sign in';
+    if(r&&r.ok){ _msg('Signed in. Loading your trips…','ok'); loadPanel(); }
+    else { _msg((r&&r.error)||'Verification failed.','err'); }
+  }catch(e){ btn.disabled=false; btn.textContent='Verify & sign in'; _msg('Network error. Please retry.','err'); }
+}
+
+function resetLogin(){
+  document.getElementById('stepOtp').style.display='none';
+  document.getElementById('stepEmail').style.display='block';
+  document.getElementById('otpInput').value=''; _msg('');
+  if(_resendTimer) clearInterval(_resendTimer);
+  var _rb=document.getElementById('resendBtn'); if(_rb){ _rb.disabled=true; _rb.textContent='Resend code'; }
+}
+function showLogin(){
+  document.getElementById('appScreen').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
+  resetLogin();
+  document.getElementById('emailInput').value='';
+}
+async function logoutFn(){
+  try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
+  showLogin();
+}
+
+async function loadPanel(){
+  document.getElementById('loginScreen').style.display='none';
+  var app=document.getElementById('appScreen'); app.style.display='block';
+  var content=app.querySelector('.content'); content.style.opacity='.4';
+  try{
+    var res=await fetch('/api/data', {headers:{'Accept':'application/json'}});
+    content.style.opacity='1';
+    if(res.status===401){ showLogin(); _msg('Your session expired. Please sign in again.','err'); return; }
+    var r=await res.json();
+    if(!r||!r.ok){ alert('Could not load data: '+((r&&r.error)||'unknown')); return; }
+    var d=r.data;
+    CONTRACTS=d.contracts||[]; VEHICLES=d.vehicles||{}; TRIPS=d.trips||{};
+    setHeader(d.vendor||{});
+    showL1();
+  }catch(e){ content.style.opacity='1'; alert('Error loading data: '+e.message); }
+}
+
+var _resendTimer=null, _resendLeft=0;
+function startResendCountdown(sec){
+  _resendLeft=sec;
+  var b=document.getElementById('resendBtn'); if(!b) return;
+  clearInterval(_resendTimer);
+  var tick=function(){
+    if(_resendLeft<=0){ b.disabled=false; b.textContent='Resend code'; clearInterval(_resendTimer); return; }
+    b.disabled=true; b.textContent='Resend code in '+_resendLeft+'s'; _resendLeft--;
+  };
+  tick(); _resendTimer=setInterval(tick,1000);
+}
+async function resendCode(){
+  var b=document.getElementById('resendBtn'); if(b) b.disabled=true;
+  try{
+    var r=await _post('/api/request-otp',{email:LOGIN_EMAIL});
+    if(r&&r.ok){ _msg('A new code has been sent.','ok'); }
+    else { _msg((r&&r.error)||'Could not resend. Please wait a moment.','err'); }
+  }catch(e){ _msg('Network error. Please retry.','err'); }
+  startResendCountdown(30);
+}
+
+/* ══════════════ L1 ══════════════ */
+function fillSelect(id, values){
+  var sel=document.getElementById(id); if(!sel) return;
+  var cur=sel.value;
+  sel.innerHTML='<option value="all">All</option>'+values.map(function(v){return '<option>'+v+'</option>';}).join('');
+  if(cur==='all' || values.indexOf(cur)>-1) sel.value=cur;
+}
+function populateL1Filters(){
+  var clusters=[],sizes=[],hours=[];
+  CONTRACTS.forEach(function(c){
+    if(c.cluster && clusters.indexOf(c.cluster)<0) clusters.push(c.cluster);
+    if(c.size && sizes.indexOf(c.size)<0) sizes.push(c.size);
+    if(c.hours && hours.indexOf(c.hours)<0) hours.push(c.hours);
+  });
+  clusters.sort(); sizes.sort(); hours.sort();
+  fillSelect('l1Cluster', clusters); fillSelect('l1Size', sizes); fillSelect('l1Hours', hours);
+}
+function renderContracts(){
+  populateL1Filters();
+  var q=(document.getElementById('l1Search').value||'').toLowerCase();
+  var fc=document.getElementById('l1Cluster').value;
+  var fs=document.getElementById('l1Size').value;
+  var fh=document.getElementById('l1Hours').value;
+
+  var rows=CONTRACTS.filter(function(c){
+    if(fc!=='all' && c.cluster!==fc) return false;
+    if(fs!=='all' && c.size!==fs) return false;
+    if(fh!=='all' && c.hours!==fh) return false;
+    if(q && !((c.cluster+' '+c.size+' '+c.id).toLowerCase().indexOf(q)>-1)) return false;
+    return true;
+  });
+
+  document.getElementById('asCount').textContent='You have '+pendingCount()+' trips pending confirmation';
+
+  var el=document.getElementById('contractList');
+  if(rows.length===0){ el.innerHTML='<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted);">'+(CONTRACTS.length?'No contracts match these filters.':'No transferred trips are available for your account yet.')+'</div>'; return; }
+
+  el.innerHTML=rows.map(function(c){
+    var nveh=cNVeh(c), slab=cSlabKm(c);
+    var over=c.regKm>slab?c.regKm-slab:0;
+    var basePct=Math.min(100,c.regKm/slab*100);
+    var baseW=Math.min(80,basePct*0.80);
+    var overW=over>0?Math.round(over/slab*100*0.80):0;
+    return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
+      '<div class="cc-l"><div class="cc-badge"><div class="ccb-sz">'+c.size+'</div><div class="ccb-u">'+c.hours+'</div></div>'+
+      '<div class="cc-info"><div class="cc-name">'+c.cluster+' · '+c.size+' · '+nveh+' Vehicles · '+c.hours+'</div>'+
+      '<div class="cc-meta"><span>Cluster: <b>'+c.cluster+'</b></span><span>Vehicle Size: <b>'+c.size+'</b></span><span>Vehicles: <b>'+nveh+'</b></span><span>Hours: <b>'+c.hours+'</b></span><span>Duration: <b>'+c.duration+'</b></span></div>'+
+      '<div class="cc-id">'+c.id+'</div></div></div>'+
+      '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+c.regKm.toLocaleString('en-IN')+'</b> / '+slab.toLocaleString('en-IN')+' km</span>'+(over?'<span style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' extra</span>':'')+'</div>'+
+      '<div class="prog-track"><div class="prog-fill" style="width:'+baseW+'%"></div>'+(overW?'<div class="prog-over" style="width:'+overW+'%"></div>':'')+'</div>'+
+      '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Actual KM as of last completed trip · '+c.lastTrip+'</div></div>'+
+      '<div class="cc-arrow">›</div></div></div>';
+  }).join('');
+}
+
+/* ══════════════ NAV ══════════════ */
+function setView(id){ ['view-l1','view-mis','view-l2'].forEach(function(v){ document.getElementById(v).classList.toggle('active', v===id); }); window.scrollTo({top:0,behavior:'smooth'}); }
+function showL1(){ renderContracts(); setView('view-l1'); }
+function showGlobalMIS(){ misMode='global'; misContractId=null; setView('view-mis'); renderMISInto('misPanel', null); }
+
+var currentContract=null;
+function showL2(id){
+  currentContract=contractById(id);
+  var c=currentContract;
+  // reset per-contract filters so selections don't leak across contracts
+  ['_bill','_rto','_veh','_con'].forEach(function(k){ delete filterStore['tripPanelContract'+k]; });
+  subState['tripPanelContract']='all';
+  var _vtf=document.getElementById('vehTypeFilter'); if(_vtf) _vtf.value='all';
+  var nveh=cNVeh(c), slab=cSlabKm(c);
+  document.getElementById('csumTitle').textContent=c.vendor+' × '+c.cluster+' × '+c.size+' × '+nveh+' Vehicles × '+c.hours;
+  document.getElementById('csumId').innerHTML='Contract ID: '+c.id+' &nbsp;·&nbsp; Duration: <b>'+c.duration+'</b>';
+  document.getElementById('csmVeh').textContent=nveh;
+  document.getElementById('csmKm').textContent=c.regKm.toLocaleString('en-IN');
+  var over=c.regKm>slab?c.regKm-slab:0;
+  var withinSlab=Math.min(c.regKm,slab);
+  document.getElementById('slabLabel').innerHTML='<b>'+c.regKm.toLocaleString('en-IN')+'</b> actual KMs run of <b>'+slab.toLocaleString('en-IN')+'</b> Total KM Slab';
+  document.getElementById('slabOver').innerHTML=over?'<b style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' km extra</b> @ ₹'+c.overRate+'/km':'<span style="color:var(--muted)">Within Total KM Slab</span>';
+  document.getElementById('slabBase').style.width=(withinSlab/slab*80)+'%';
+  document.getElementById('slabOverBar').style.width=over?Math.round(over/slab*80)+'%':'0%';
+  document.getElementById('slabRate').textContent=c.overRate;
+  var slabAsOf=document.getElementById('slabAsOf'); if(slabAsOf) slabAsOf.textContent='Actual KM aggregated as of the last completed trip · '+c.lastTrip;
+  renderBreakup(c);
+  document.getElementById('view-l1').classList.remove('active');
+  document.getElementById('view-mis').classList.remove('active');
+  document.getElementById('view-l2').classList.add('active');
+  showL2Tab('veh');
+  renderVehicles();
+  misMode='contract'; misContractId=c.id;
+  renderMISInto('tripPanelContract', c.id);
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function showL2Tab(t){
+  document.getElementById('l2-veh').classList.toggle('hidden', t!=='veh');
+  document.getElementById('l2-trip').classList.toggle('hidden', t!=='trip');
+  document.getElementById('tab-veh').classList.toggle('active', t==='veh');
+  document.getElementById('tab-trip').classList.toggle('active', t==='trip');
+}
+
+/* ══════════════ BREAKUP ══════════════ */
+function renderBreakup(c){
+  var nveh=cNVeh(c), slab=cSlabKm(c), fixed=cFixedValue(c);
+  var html='<thead><tr><th># of Vehicles</th><th>KM Slab</th><th>Contract Value (Fixed)</th></tr></thead><tbody>';
+  c.tiers.forEach(function(r){
+    var lineSlab=r.count*r.slabPerVeh, lineVal=r.count*r.valuePerVeh;
+    html+='<tr><td><b>'+r.count+'</b> '+(r.count>1?'Vehicles':'Vehicle')+'</td>'+
+      '<td>'+r.slabPerVeh.toLocaleString('en-IN')+' km each = <b>'+lineSlab.toLocaleString('en-IN')+' km</b></td>'+
+      '<td>'+money(lineVal)+'</td></tr>';
+  });
+  html+='<tr><td><b>'+nveh+' Vehicles</b> <span class="badge b-regular">Total KM Slab</span></td>'+
+    '<td><b>'+slab.toLocaleString('en-IN')+' km</b></td><td><b>'+money(fixed)+'</b></td></tr></tbody>';
+  document.getElementById('breakupTable').innerHTML=html;
+  var cap=document.getElementById('breakupNote');
+  if(cap) cap.innerHTML='Up to <b>'+slab.toLocaleString('en-IN')+' km</b> (Total KM Slab across all vehicles) is covered by the fixed contract value of <b>'+money(fixed)+'</b>. KMs beyond the Total KM Slab are paid at <b>₹'+c.overRate+'/km</b>.';
+}
+
+/* ══════════════ VEHICLES ══════════════ */
+function renderVehicles(){
+  var c=currentContract;
+  var list=VEHICLES[c.id]||[];
+  var f=document.getElementById('vehTypeFilter').value;
+  var rows=list.filter(function(v){ return f==='all'||v.tag===f; });
+  document.getElementById('vehBody').innerHTML=rows.map(function(v){
+    var tagBadge=v.tag==='default'?'<span class="badge b-default">Default</span>':'<span class="badge b-repl">Replacement</span>';
+    return '<tr class="vrow" onclick="openVehicleTrips(\''+v.name+'\')">'+
+      '<td><div class="vname-cell"><div class="vdot '+(v.tag==='repl'?'repl':'')+'">'+v.name+'</div>'+
+      '<div><div style="font-weight:600">'+v.name+' <span style="font-size:10px;color:var(--muted);font-weight:400;">· '+v.size+'</span></div>'+
+      '<div style="font-size:10px;color:var(--muted)">'+v.no+'</div></div></div></td>'+
+      '<td>'+tagBadge+'</td>'+
+      '<td class="km-cell"><b>'+v.km.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span></td>'+
+      '<td>'+v.regTrips+'</td><td>'+v.adhocTrips+'</td><td>'+v.total+'</td>'+
+      '<td style="color:var(--blue);font-size:16px;">›</td></tr>';
+  }).join('');
+}
+function openVehicleTrips(vname){
+  showL2Tab('trip');
+  var sel=document.querySelector('#tripPanelContract #f_veh');
+  if(sel){ sel.value=vname; }
+  renderMISInto('tripPanelContract', currentContract.id);
+}
+
+/* ══════════════ SHARED MIS RENDERER (read-only) ══════════════ */
+var filterStore={};
+var misMode='global', misContractId=null;
+var subState={};
+
+function renderMISInto(panelId, cid){
+  var panel=document.getElementById(panelId);
+  if(!subState[panelId]) subState[panelId]='all';
+
+  var prevBill=panel.querySelector('#f_bill'), prevRto=panel.querySelector('#f_rto'),
+      prevVeh=panel.querySelector('#f_veh'), prevCon=panel.querySelector('#f_contract');
+  if(prevBill) filterStore[panelId+'_bill']=prevBill.value;
+  if(prevRto) filterStore[panelId+'_rto']=prevRto.value;
+  if(prevVeh) filterStore[panelId+'_veh']=prevVeh.value;
+  if(prevCon) filterStore[panelId+'_con']=prevCon.value;
+
+  panel.innerHTML=
+    (cid?'':'<div class="mis-context">Showing trips across <b>all contracts</b>. Use the Contract ID column to see which contract each trip belongs to.</div>')+
+    '<div class="subtabs-row"><div class="subtabs" id="sub_'+panelId+'">'+
+      '<div class="subtab '+(subState[panelId]==='all'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'all\')">All <span class="cnt" id="c_all_'+panelId+'"></span></div>'+
+      '<div class="subtab '+(subState[panelId]==='pending'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'pending\')">Pending Confirmation <span class="cnt" id="c_pending_'+panelId+'"></span></div>'+
+      '<div class="subtab '+(subState[panelId]==='confirmed'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'confirmed\')">Confirmed <span class="cnt" id="c_confirmed_'+panelId+'"></span></div>'+
+      '</div><button class="download-btn" onclick="downloadCSV()">⬇ Download</button></div>'+
+    '<div class="filters">'+
+      '<div class="filt"><span class="fl-lbl">Date:</span><select><option>Jul 1–31, 2026</option><option>This Week</option></select></div>'+
+      '<div class="filt"><span class="fl-lbl">Billing Type:</span><select id="f_bill" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All</option><option value="Regular">Regular</option><option value="Adhoc">Adhoc</option></select></div>'+
+      (cid?('<div class="filt"><span class="fl-lbl">Vehicle:</span><select id="f_veh" onchange="renderMISInto(\''+panelId+'\',\''+cid+'\')"><option value="all">All</option>'+(VEHICLES[cid]||[]).map(function(v){return '<option>'+v.name+'</option>';}).join('')+'</select></div>')
+          :('<div class="filt"><span class="fl-lbl">Contract:</span><select id="f_contract" onchange="renderMISInto(\''+panelId+'\',\'\')"><option value="all">All</option>'+CONTRACTS.map(function(c){return '<option value="'+c.id+'">'+c.cluster+' · '+c.size+' · '+cNVeh(c)+'veh</option>';}).join('')+'</select></div>'))+
+      '<div class="filt"><span class="fl-lbl">Show:</span><select id="f_rto" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All trips</option><option value="km">KM-bearing only</option><option value="rto">RTO-only (0 KM)</option></select></div>'+
+    '</div>'+
+    '<table class="ttable"><thead><tr>'+
+      '<th>Trip Info</th>'+(cid?'':'<th>Contract ID</th>')+'<th>Actual Route</th><th>Billing</th><th>Replacement Tag</th><th>Completed</th><th>KMs / Amount</th><th>Status</th>'+
+    '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table>';
+
+  var billSel=panel.querySelector('#f_bill'), rtoSel=panel.querySelector('#f_rto'),
+      vehSel=panel.querySelector('#f_veh'), conSel=panel.querySelector('#f_contract');
+  if(billSel && filterStore[panelId+'_bill']) billSel.value=filterStore[panelId+'_bill'];
+  if(rtoSel && filterStore[panelId+'_rto']) rtoSel.value=filterStore[panelId+'_rto'];
+  if(vehSel && filterStore[panelId+'_veh']) vehSel.value=filterStore[panelId+'_veh'];
+  if(conSel && filterStore[panelId+'_con']) conSel.value=filterStore[panelId+'_con'];
+
+  var src=cid?(TRIPS[cid]||[]).map(function(t){return Object.assign({},t,{cid:cid});}):allTrips();
+  var bill=billSel?billSel.value:'all';
+  var rto=rtoSel?rtoSel.value:'all';
+  var veh=vehSel?vehSel.value:'all';
+  var con=conSel?conSel.value:'all';
+  var sub=subState[panelId];
+
+  panel.querySelector('#c_all_'+panelId).textContent='('+src.length+')';
+  panel.querySelector('#c_pending_'+panelId).textContent='('+src.filter(function(t){return t.status==='pending';}).length+')';
+  panel.querySelector('#c_confirmed_'+panelId).textContent='('+src.filter(function(t){return t.status==='confirmed';}).length+')';
+
+  var rows=src.slice();
+  if(sub==='pending') rows=rows.filter(function(t){return t.status==='pending';});
+  if(sub==='confirmed') rows=rows.filter(function(t){return t.status==='confirmed';});
+  if(bill!=='all') rows=rows.filter(function(t){return t.billing===bill;});
+  if(veh!=='all') rows=rows.filter(function(t){return t.veh===veh||t.replFor===veh;});
+  if(con!=='all') rows=rows.filter(function(t){return t.cid===con;});
+  if(rto==='km') rows=rows.filter(function(t){return !t.rto;});
+  if(rto==='rto') rows=rows.filter(function(t){return t.rto;});
+
+  var tb=panel.querySelector('#tb_'+panelId);
+  var colspan=(cid?7:8);
+  if(rows.length===0){ tb.innerHTML='<tr><td colspan="'+colspan+'" style="text-align:center;color:var(--muted);padding:26px;">No trips match these filters.</td></tr>'; return; }
+
+  tb.innerHTML=rows.map(function(t){
+    var billBadge=t.billing==='Regular'?'<span class="badge b-regular">Regular</span>':'<span class="badge b-adhoc">Adhoc</span>';
+    var replCol;
+    if(t.billing==='Adhoc'){ replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
+    else if(t.replTag==='repl'){ replCol='<span class="badge tag-repl-reg">Replacement Regular</span><div class="repl-for">Replacing <b>'+vehNoOf(t.cid,t.replFor)+' ('+t.replFor+')</b></div>'; }
+    else { replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
+    var kmCell;
+    if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not accumulated</div>';
+    else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span><div style="font-size:9.5px;color:var(--muted);">adhoc amount</div>';
+    else kmCell='<span class="km-cell"><b>'+t.km+'</b> km</span>';
+    var statusCell = t.status==='pending'
+      ? '<div class="st-pending">Pending Confirmation</div><div class="st-win">Dispute open till '+(t.win||'—')+'</div>'
+      : '<div class="st-confirmed">✓ Confirmed</div>';
+    var cidCol=cid?'':'<td><span class="cid-pill">'+t.cid+'</span></td>';
+    return '<tr>'+
+      '<td><div style="font-weight:600;font-size:11.5px;">'+t.id+'</div><div style="font-size:10px;color:var(--muted);margin-top:2px;">'+t.size+' · '+t.vehNo+'</div></td>'+
+      cidCol+
+      '<td>'+routeHtml(t.route)+'</td><td>'+billBadge+'</td><td>'+replCol+'</td>'+
+      '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td>'+statusCell+'</td></tr>';
+  }).join('');
+}
+function setSub(panelId,s){ subState[panelId]=s; renderMISInto(panelId, panelId==='misPanel'?null:misContractId); }
+
+function routeHtml(route){
+  route=route||[];
+  var inner=route.length>3
+    ? '<span class="rnode">'+route[0]+'</span><span class="rarr">→</span><span class="rnode mid" title="'+route.slice(1,-1).join(' → ')+'">'+(route.length-2)+' nodes</span><span class="rarr">→</span><span class="rnode">'+route[route.length-1]+'</span>'
+    : route.map(function(n,i){ return '<span class="rnode">'+n+'</span>'+(i<route.length-1?'<span class="rarr">→</span>':''); }).join('');
+  return '<div class="route-nodes">'+inner+'</div>';
+}
+
+/* ══════════════ CSV DOWNLOAD (read-only export of what the vendor sees) ══════════════ */
+function downloadCSV(){
+  var headers=['Contract ID','Cluster','Vehicle Size','Contract Hours','Trip ID','Trip Vehicle Size','Vehicle No','Vehicle Tag','Original Vehicle (if replacement)','Actual Route','Billing Type','Replacement Tag','Completed Time','KM','Adhoc Amount (INR)','KM Accumulated','Trip Status','Dispute Window'];
+  var rows=[headers];
+  CONTRACTS.forEach(function(c){
+    (TRIPS[c.id]||[]).forEach(function(t){
+      var replTag=t.billing==='Adhoc'?'':(t.replTag==='repl'?'Replacement Regular':'');
+      var origVeh=(t.billing!=='Adhoc'&&t.replTag==='repl')?(vehNoOf(c.id,t.replFor)+' ('+t.replFor+')'):'';
+      var km=(t.billing==='Regular'&&!t.rto)?t.km:'';
+      var amt=t.billing==='Adhoc'?t.amt:'';
+      var kmAccum=t.rto?'No (RTO)':(t.billing==='Regular'?'Yes':'N/A (Adhoc)');
+      var tagV=(VEHICLES[c.id]||[]).find(function(v){return v.name===t.veh;});
+      rows.push([c.id,c.cluster,c.size,c.hours,t.id,t.size,t.vehNo,(tagV?tagV.tag:''),origVeh,
+        (t.route||[]).join(' > '),t.billing,replTag,t.completed,km,amt,kmAccum,(t.status==='pending'?'Pending Confirmation':'Confirmed'),t.win||'']);
+    });
+  });
+  var csv=rows.map(function(r){ return r.map(function(cell){ var s=String(cell==null?'':cell); return (s.indexOf(',')>-1||s.indexOf('"')>-1||s.indexOf('\n')>-1)?'"'+s.replace(/"/g,'""')+'"':s; }).join(','); }).join('\n');
+  var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a'); a.href=url; a.download='VALMO_trips_export.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+/* ══════════════ INIT ══════════════ */
+document.addEventListener('DOMContentLoaded', async function(){
+  // If a valid session cookie exists, /api/data returns data; otherwise show login.
+  try{
+    var res=await fetch('/api/data', {headers:{'Accept':'application/json'}});
+    if(res.ok){
+      var r=await res.json();
+      if(r&&r.ok){
+        CONTRACTS=r.data.contracts||[]; VEHICLES=r.data.vehicles||{}; TRIPS=r.data.trips||{};
+        setHeader(r.data.vendor||{});
+        document.getElementById('loginScreen').style.display='none';
+        document.getElementById('appScreen').style.display='block';
+        showL1();
+        return;
+      }
+    }
+  }catch(e){}
+  showLogin();
+});
+</script>
+</body></html>
