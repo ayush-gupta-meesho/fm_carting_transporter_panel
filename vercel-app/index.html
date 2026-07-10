@@ -557,6 +557,22 @@ async function resendCode(){
   startResendCountdown(30);
 }
 
+function setHeader(v){
+  var name=v.name||'Transporter';
+  var initials=name.split(/\s+/).filter(Boolean).map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
+  var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent=name;
+  var tbAv=document.querySelector('.topbar .tb-avatar'); if(tbAv) tbAv.textContent=initials||'V';
+  var t=document.querySelector('.vh-title'); if(t) t.textContent=name;
+  var sub=document.querySelector('.vh-sub');
+  if(sub) sub.innerHTML='Oracle ID: '+(v.oracle||'\u2014')+' &nbsp;\u00b7&nbsp; Contract Duration: <b>'+(v.duration||'\u2014')+'</b> &nbsp;\u00b7&nbsp; Active';
+  var nums=document.querySelectorAll('.vh-stats .vs-num');
+  if(nums.length>=3){
+    nums[0].textContent=(v.contractCount||0);
+    nums[1].textContent=Number(v.mtdKm||0).toLocaleString('en-IN');
+    nums[2].textContent=(v.clusters||0);
+  }
+}
+
 /* ══════════════ L1 ══════════════ */
 function fillSelect(id, values){
   var sel=document.getElementById(id); if(!sel) return;
