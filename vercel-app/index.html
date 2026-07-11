@@ -307,7 +307,7 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
         <div class="tb-tag">Transporter Portal</div>
       </div>
       <div class="tb-r">
-        <span class="ro-pill">Read-only</span>
+        <span class="ro-pill" id="roPill" style="display:none">Read-only</span>
         <span>Vendor</span>
         <div class="tb-avatar">V</div>
         <button class="tb-logout" onclick="logoutFn()">Sign out</button>
@@ -598,6 +598,7 @@ function setHeader(v){
   var name=v.name||'Transporter';
   var initials=name.split(/\s+/).filter(Boolean).map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
   var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent=name;
+  var _rp=document.getElementById('roPill'); if(_rp) _rp.style.display='none';
   var tbAv=document.querySelector('.topbar .tb-avatar'); if(tbAv) tbAv.textContent=initials||'V';
   var t=document.querySelector('.vh-title'); if(t) t.textContent=name;
   var sub=document.querySelector('.vh-sub');
@@ -653,6 +654,17 @@ function renderContracts(){
   if(rows.length===0){ el.innerHTML='<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted);">'+(CONTRACTS.length?'No contracts match these filters.':'No transferred trips are available for your account yet.')+'</div>'; return; }
 
   el.innerHTML=rows.map(function(c){
+    if(c.isAdhocBucket){
+      var _n=(TRIPS[c.id]||[]).length;
+      return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
+        '<div class="cc-l"><div class="cc-badge" style="background:#EFEAFB;color:#5A3FB0;"><div class="ccb-sz">Adhoc</div><div class="ccb-u">other</div></div>'+
+        '<div class="cc-info"><div class="cc-name">'+((IS_ADMIN&&c.vendor)?(c.vendor+' · '):'')+'Other Adhoc Trips</div>'+
+        '<div class="cc-meta"><span>Unattributed adhoc trips (billed standalone)</span><span>Vehicles: <b>'+c.nveh+'</b></span></div>'+
+        '<div class="cc-id">'+c.id+'</div></div></div>'+
+        '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+_n+'</b> adhoc trips</span><span style="color:var(--amber)">'+money(c.adhocTotal||0)+'</span></div>'+
+        '<div style="font-size:9px;color:var(--muted);margin-top:3px;">No KM slab · billed on amount</div></div>'+
+        '<div class="cc-arrow">›</div></div></div>';
+    }
     var nveh=cNVeh(c), slab=cSlabKm(c);
     var over=c.regKm>slab?c.regKm-slab:0;
     var basePct=Math.min(100,c.regKm/slab*100);
@@ -684,19 +696,30 @@ function showL2(id){
   subState['tripPanelContract']='all';
   var _vtf=document.getElementById('vehTypeFilter'); if(_vtf) _vtf.value='all';
   var nveh=cNVeh(c), slab=cSlabKm(c);
-  document.getElementById('csumTitle').textContent=c.vendor+' × '+c.cluster+' × '+c.size+' × '+nveh+' Vehicles × '+c.hours;
-  document.getElementById('csumId').innerHTML='Contract ID: '+c.id+' &nbsp;·&nbsp; Duration: <b>'+c.duration+'</b>';
-  document.getElementById('csmVeh').textContent=nveh;
-  document.getElementById('csmKm').textContent=c.regKm.toLocaleString('en-IN');
-  var over=c.regKm>slab?c.regKm-slab:0;
-  var withinSlab=Math.min(c.regKm,slab);
-  document.getElementById('slabLabel').innerHTML='<b>'+c.regKm.toLocaleString('en-IN')+'</b> actual KMs run of <b>'+slab.toLocaleString('en-IN')+'</b> Total KM Slab';
-  document.getElementById('slabOver').innerHTML=over?'<b style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' km extra</b> @ ₹'+c.overRate+'/km':'<span style="color:var(--muted)">Within Total KM Slab</span>';
-  document.getElementById('slabBase').style.width=(withinSlab/slab*80)+'%';
-  document.getElementById('slabOverBar').style.width=over?Math.round(over/slab*80)+'%':'0%';
-  document.getElementById('slabRate').textContent=c.overRate;
-  var slabAsOf=document.getElementById('slabAsOf'); if(slabAsOf) slabAsOf.textContent='Actual KM aggregated as of the last completed trip · '+c.lastTrip;
-  renderBreakup(c);
+  var _sw=document.querySelector('#view-l2 .slab-wrap');
+  var _bt=document.getElementById('breakupTable'), _bn=document.getElementById('breakupNote');
+  if(c.isAdhocBucket){
+    document.getElementById('csumTitle').textContent=c.vendor+' × Other Adhoc Trips';
+    document.getElementById('csumId').innerHTML='Unattributed adhoc trips &nbsp;·&nbsp; Total <b>'+money(c.adhocTotal||0)+'</b>';
+    document.getElementById('csmVeh').textContent=nveh;
+    document.getElementById('csmKm').textContent='—';
+    if(_sw) _sw.style.display='none'; if(_bt) _bt.style.display='none'; if(_bn) _bn.style.display='none';
+  } else {
+    if(_sw) _sw.style.display=''; if(_bt) _bt.style.display=''; if(_bn) _bn.style.display='';
+    document.getElementById('csumTitle').textContent=c.vendor+' × '+c.cluster+' × '+c.size+' × '+nveh+' Vehicles × '+c.hours;
+    document.getElementById('csumId').innerHTML='Contract ID: '+c.id+' &nbsp;·&nbsp; Duration: <b>'+c.duration+'</b>';
+    document.getElementById('csmVeh').textContent=nveh;
+    document.getElementById('csmKm').textContent=c.regKm.toLocaleString('en-IN');
+    var over=c.regKm>slab?c.regKm-slab:0;
+    var withinSlab=Math.min(c.regKm,slab);
+    document.getElementById('slabLabel').innerHTML='<b>'+c.regKm.toLocaleString('en-IN')+'</b> actual KMs run of <b>'+slab.toLocaleString('en-IN')+'</b> Total KM Slab';
+    document.getElementById('slabOver').innerHTML=over?'<b style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' km extra</b> @ ₹'+c.overRate+'/km':'<span style="color:var(--muted)">Within Total KM Slab</span>';
+    document.getElementById('slabBase').style.width=(withinSlab/slab*80)+'%';
+    document.getElementById('slabOverBar').style.width=over?Math.round(over/slab*80)+'%':'0%';
+    document.getElementById('slabRate').textContent=c.overRate;
+    var slabAsOf=document.getElementById('slabAsOf'); if(slabAsOf) slabAsOf.textContent='Actual KM aggregated as of the last completed trip · '+c.lastTrip;
+    renderBreakup(c);
+  }
   document.getElementById('view-l1').classList.remove('active');
   document.getElementById('view-mis').classList.remove('active');
   document.getElementById('view-l2').classList.add('active');
@@ -1093,6 +1116,7 @@ function renderAdmin(d){
   var t=document.querySelector('.vh-title'); if(t) t.textContent='All-Vendor Contract Sizing (read-only)';
   var sub=document.querySelector('.vh-sub'); if(sub) sub.innerHTML='Ground view \u00b7 '+((d.contracts||[]).length)+' contracts across all vendors \u00b7 generated '+(d.generated_at||'');
   var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent='Admin \u00b7 Ground';
+  var _rp=document.getElementById('roPill'); if(_rp) _rp.style.display='';
   var av=document.querySelector('.topbar .tb-avatar'); if(av) av.textContent='A';
   showL1();
 }
@@ -1118,13 +1142,4 @@ document.addEventListener('DOMContentLoaded', async function(){
         CONTRACTS=r.data.contracts||[]; VEHICLES=r.data.vehicles||{}; TRIPS=r.data.trips||{};
         setHeader(r.data.vendor||{});
         document.getElementById('loginScreen').style.display='none';
-        document.getElementById('appScreen').style.display='block';
-        showL1();
-        return;
-      }
-    }
-  }catch(e){}
-  showLogin();
-});
-</script>
-</body></html>
+        document.getElementById('appScreen').style.dis

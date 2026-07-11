@@ -439,6 +439,50 @@ function _buildVendorPayload(oracle, opts) {
     }
   });
 
+  // ---- Other Adhoc bucket: this vendor's trips whose contract_id is NOT one of their real contracts ----
+  var _orphan = myTrips.filter(function (t) { return !myContractIds[_s(t.contract_id)]; });
+  if (_orphan.length) {
+    var BID = 'ADHOC-' + oracle;
+    var oAgg = {};
+    var oTrips = _orphan.map(function (t) {
+      var no = _s(t.vehicle_number);
+      var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Adhoc';
+      var isAdhoc = _low(billing) === 'adhoc';
+      var km = _num(t.total_trip_km);
+      var rto = _low(t.challan_type) === 'rto';
+      if (!oAgg[no]) oAgg[no] = { km: 0, regTrips: 0, adhocTrips: 0 };
+      if (isAdhoc) oAgg[no].adhocTrips++; else { oAgg[no].regTrips++; if (!rto) oAgg[no].km += km; }
+      return {
+        id: _s(t.trip_id), size: _s(t.vehicle_size), veh: no, vehNo: no, route: _buildRoute(t),
+        billing: isAdhoc ? 'Adhoc' : 'Regular', replTag: 'default', replFor: undefined,
+        completed: _fmtShort(t.trip_end_time), km: isAdhoc ? null : (rto ? 0 : km),
+        amt: isAdhoc ? _num(t.adhoc_amount) : null, rto: rto ? true : undefined,
+        status: (function (v) { return v === 'confirmed' || v === 'reconfirmed' ? 'confirmed' : (v === 'disputed' ? 'disputed' : (v === 'reconfirm' ? 'reconfirm' : 'pending')); })(_low(t.vendor_status)),
+        win: _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
+        disp: dmap[_s(t.trip_id)] || null
+      };
+    });
+    var oVeh = Object.keys(oAgg).map(function (no) {
+      var a = oAgg[no];
+      return { name: no, no: no, size: '', tag: 'default', km: a.km, regTrips: a.regTrips, adhocTrips: a.adhocTrips, total: a.regTrips + a.adhocTrips };
+    });
+    var adhocTotal = 0;
+    _orphan.forEach(function (t) {
+      var b = _low(_s(t.billing_type_final) || _s(t.billing_type_system));
+      if (b === 'adhoc') adhocTotal += _num(t.adhoc_amount);
+    });
+    VEHICLES[BID] = oVeh; TRIPS[BID] = oTrips;
+    CONTRACTS.push({
+      id: BID, vendor: vendorName, size: '\u2014', cluster: 'Other Adhoc', nveh: oVeh.length,
+      hours: '\u2014', regKm: 0, overRate: 0, duration: '\u2014', lastTrip: '\u2014',
+      tiers: [], isAdhocBucket: true, adhocTotal: Math.round(adhocTotal)
+    });
+    if (opts.admin) {
+      var _b = CONTRACTS[CONTRACTS.length - 1];
+      _b.oracle = oracle; _b.slabKm = 0; _b.projKm = 0; _b.projPct = 0; _b.sizing = 'good';
+    }
+  }
+
   return {
     vendor: {
       name:          vendorName,
