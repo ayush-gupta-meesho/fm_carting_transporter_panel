@@ -1142,4 +1142,13 @@ document.addEventListener('DOMContentLoaded', async function(){
         CONTRACTS=r.data.contracts||[]; VEHICLES=r.data.vehicles||{}; TRIPS=r.data.trips||{};
         setHeader(r.data.vendor||{});
         document.getElementById('loginScreen').style.display='none';
-        document.getElementById('appScreen').style.dis
+        document.getElementById('appScreen').style.display='block';
+        showL1();
+        return;
+      }
+    }
+  }catch(e){}
+  showLogin();
+});
+</script>
+</body></html>
