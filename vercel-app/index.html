@@ -754,6 +754,7 @@ function renderMISInto(panelId, cid){
     '<div class="subtabs-row"><div class="subtabs" id="sub_'+panelId+'">'+
       '<div class="subtab '+(subState[panelId]==='all'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'all\')">All <span class="cnt" id="c_all_'+panelId+'"></span></div>'+
       '<div class="subtab '+(subState[panelId]==='pending'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'pending\')">Pending Confirmation <span class="cnt" id="c_pending_'+panelId+'"></span></div>'+
+      '<div class="subtab '+(subState[panelId]==='disputed'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'disputed\')">Disputed <span class="cnt" id="c_disputed_'+panelId+'"></span></div>'+
       '<div class="subtab '+(subState[panelId]==='confirmed'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'confirmed\')">Confirmed <span class="cnt" id="c_confirmed_'+panelId+'"></span></div>'+
       '</div><button class="download-btn" onclick="downloadCSV()">⬇ Download</button></div>'+
     '<div class="filters">'+
@@ -784,9 +785,11 @@ function renderMISInto(panelId, cid){
   panel.querySelector('#c_all_'+panelId).textContent='('+src.length+')';
   panel.querySelector('#c_pending_'+panelId).textContent='('+src.filter(function(t){return t.status==='pending'||t.status==='reconfirm';}).length+')';
   panel.querySelector('#c_confirmed_'+panelId).textContent='('+src.filter(function(t){return t.status==='confirmed';}).length+')';
+  var dc=panel.querySelector('#c_disputed_'+panelId); if(dc) dc.textContent='('+src.filter(function(t){return t.status==='disputed';}).length+')';
 
   var rows=src.slice();
   if(sub==='pending') rows=rows.filter(function(t){return t.status==='pending'||t.status==='reconfirm';});
+  if(sub==='disputed') rows=rows.filter(function(t){return t.status==='disputed';});
   if(sub==='confirmed') rows=rows.filter(function(t){return t.status==='confirmed';});
   if(bill!=='all') rows=rows.filter(function(t){return t.billing===bill;});
   if(veh!=='all') rows=rows.filter(function(t){return t.veh===veh||t.replFor===veh;});

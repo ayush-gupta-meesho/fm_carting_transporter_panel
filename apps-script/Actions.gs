@@ -101,8 +101,9 @@ function drainActions() {
 function drainAndSyncFromMenu() {
   var t = transferReadyTrips();
   var d = drainActions();
+  var r = applyResolutionsFromSheet();
   var s = (typeof syncToUpstash === 'function') ? syncToUpstash() : '(sync skipped)';
-  SpreadsheetApp.getUi().alert(t + '\n' + d + '\n\n' + s);
+  SpreadsheetApp.getUi().alert(t + '\n' + d + '\n' + r + '\n\n' + s);
 }
 
 /* ============================ appliers ============================ */
@@ -332,6 +333,55 @@ function _applyResolvedRows(rows) {
 }
 
 
+/* ==================================================================================================
+ * IN-SHEET resolution (no CSV) — the resolution team edits Disputes_Log directly.
+ * TRIGGER : set  dispute_status = "Resolved"  on the dispute row (after filling the resolved_* cells).
+ * GUARD   : resolved_at is the "already applied" marker. A row is applied once, then skipped forever
+ *           (idempotent), so this is safe to run on a timer as often as you like.
+ * ACTION  : overwrite Trip_Level (only where a resolved_* value is present), set the trip to
+ *           Reconfirm, stamp resolved_at + reconfirm_status = Pending Reconfirmation, update the view.
+ * Fill any subset of: resolved_billing_type, resolved_km, resolved_amount,
+ *   resolved_aggregate_vehicle, resolved_contract_id, resolution_note, resolved_by. Blank = unchanged.
+ * ================================================================================================== */
+function applyResolutionsFromSheet() {
+  var dl = _ctx(LOG_TABS.disputes, 'dispute_id');
+  var tl = _ctx(TABS.tripLevel, 'trip_id');
+  var applied = 0, notes = [], now = _nowIso();
+  var val = function (row, c) { return dl.idx[c] !== undefined ? _s(dl.values[row][dl.idx[c]]) : ''; };
+
+  for (var i = dl.headerRow + 1; i < dl.values.length; i++) {
+    var did = val(i, 'dispute_id'); if (!did) continue;
+    if (val(i, 'dispute_status').toLowerCase() !== 'resolved') continue;   // TRIGGER: human set Resolved
+    if (val(i, 'resolved_at')) continue;                                   // GUARD: already applied
+
+    var tripId = val(i, 'trip_id');
+    _setCell(dl, i, 'resolved_at', now);                                   // stamp the guard
+    if (!val(i, 'reconfirm_status')) _setCell(dl, i, 'reconfirm_status', 'Pending Reconfirmation');
+
+    var tr = _findRowIndex(tl, 'trip_id', tripId);
+    if (tr < 0) { notes.push('no Trip_Level row for ' + tripId + ' (' + did + ')'); applied++; continue; }
+    var ow = function (tlCol, v) { if (v !== '') _setCell(tl, tr, tlCol, v); };
+    ow('billing_type_final', val(i, 'resolved_billing_type'));
+    ow('total_trip_km', val(i, 'resolved_km'));
+    ow('adhoc_amount', val(i, 'resolved_amount'));
+    ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));
+    ow('contract_id', val(i, 'resolved_contract_id'));
+    _setCell(tl, tr, 'vendor_status', 'Reconfirm');                        // re-surface to vendor
+    _upsertStatusView({
+      row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
+      contract_id: _s(tl.values[tr][tl.idx['contract_id']]),
+      transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
+      vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
+      reconfirm_status: 'Pending Reconfirmation', final_state: 'Pending Reconfirmation'
+    });
+    applied++;
+  }
+  var msg = 'In-sheet resolutions applied: ' + applied;
+  Logger.log(msg); if (notes.length) Logger.log(notes.join('\n'));
+  return msg + (notes.length ? ('\n' + notes.join('\n')) : '');
+}
+
+
 /* ============================ GO-LIVE: automatic apply ============================ *
  * During testing you click "6 · Apply vendor actions". At go-live, turn on a time-driven
  * trigger so the drain + sync run on a schedule (no clicks). A vendor's confirm/dispute then
@@ -340,6 +390,7 @@ function _applyResolvedRows(rows) {
 function scheduledDrainSync() {
   try { transferReadyTrips(); } catch (e) { Logger.log('transfer error: ' + e.message); }
   try { drainActions(); } catch (e) { Logger.log('drain error: ' + e.message); }
+  try { applyResolutionsFromSheet(); } catch (e) { Logger.log('resolution error: ' + e.message); }
   try { if (typeof syncToUpstash === 'function') syncToUpstash(); } catch (e) { Logger.log('sync error: ' + e.message); }
 }
 
