@@ -1,0 +1,1 @@
+log_id,row_id,trip_id,contract_id,transporter_oracle_id,trip_end_time,ground_review_deadline,sent_to_vendor_timestamp,ground_action_state,billing_before,billing_after,replaced_vehicle_before,replaced_vehicle_after,data_sent,partial_edit_flag

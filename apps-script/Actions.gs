@@ -21,6 +21,8 @@
 var ACTION_QUEUE = 'actions';          // Vercel RPUSHes JSON actions here
 var ACTION_DONE  = 'actions_done';     // SET of processed action_ids
 var ACTION_DEAD  = 'actions_dead';     // failed actions parked for inspection
+var GROUND_WINDOW_HOURS = 24;          // ground review: trip_end_time + this = ground_review_deadline
+var DISPUTE_WINDOW_DAYS = 15;          // vendor dispute window opens at transfer, lasts this many days
 var LOG_TABS = {
   disputes: 'Disputes_Log',
   ground:   'Ground_Confirmation_Log',
@@ -77,13 +79,14 @@ function drainActions() {
     var a;
     try { a = JSON.parse(raw); } catch (e) { errors++; _up(['RPUSH', ACTION_DEAD, raw]); continue; }
 
-    // dedupe by action_id
-    if (a.action_id && !_saddNew(ACTION_DONE, a.action_id)) { skipped++; continue; }
+    // dedupe by action_id (check only; mark done AFTER success so a config error stays retryable)
+    if (a.action_id && _up(['SISMEMBER', ACTION_DONE, a.action_id]) === 1) { skipped++; continue; }
 
     try {
       if (a.type === 'confirm')      applied += applyConfirm(a);
       else if (a.type === 'dispute') applied += applyDispute(a);
       else { skipped++; }
+      if (a.action_id) _up(['SADD', ACTION_DONE, a.action_id]);
     } catch (e) {
       errors++; notes.push('ERR ' + (a && a.action_id) + ': ' + e.message);
       _up(['RPUSH', ACTION_DEAD, raw]);
@@ -96,9 +99,10 @@ function drainActions() {
 
 /** Menu wrapper: drain + resync so the panel reflects the writes. */
 function drainAndSyncFromMenu() {
+  var t = transferReadyTrips();
   var d = drainActions();
   var s = (typeof syncToUpstash === 'function') ? syncToUpstash() : '(sync skipped)';
-  SpreadsheetApp.getUi().alert(d + '\n\n' + s);
+  SpreadsheetApp.getUi().alert(t + '\n' + d + '\n\n' + s);
 }
 
 /* ============================ appliers ============================ */
@@ -116,13 +120,13 @@ function applyConfirm(a) {
     if (vs === 'confirmed' || vs === 'disputed' || vs === 'reconfirmed') return;  // locked
     var isReconf = (vs === 'reconfirm');                                          // accepting a resolved correction
     var newStatus = isReconf ? 'Reconfirmed' : 'Confirmed';
-    _setCell(ctx, ri, 'vendor_status', newStatus);
     _upsertStatusView({
       row_id: rv[ctx.idx['row_id']], trip_id: tid, contract_id: rv[ctx.idx['contract_id']],
       transporter_oracle_id: a.oracle, sent_to_vendor_timestamp: rv[ctx.idx['sent_to_vendor_timestamp']],
       vendor_status: newStatus, dispute_window_end: rv[ctx.idx['dispute_window_end']],
       reconfirm_status: isReconf ? 'Reconfirmed' : '', final_state: newStatus
     });
+    _setCell(ctx, ri, 'vendor_status', newStatus);   // Trip_Level written LAST → if a log write fails, action is retryable
     n++;
   });
   return n;
@@ -170,13 +174,13 @@ function applyDispute(a) {
     dispute_status: 'Open', reconfirm_status: isRedispute ? 'Re-disputed' : ''
   });
 
-  _setCell(ctx, ri, 'vendor_status', 'Disputed');
   _upsertStatusView({
     row_id: g('row_id'), trip_id: a.trip_id, contract_id: g('contract_id'), transporter_oracle_id: a.oracle,
     sent_to_vendor_timestamp: g('sent_to_vendor_timestamp'), vendor_status: 'Disputed',
     dispute_id: disputeId, dispute_status: 'Open', dispute_window_end: g('dispute_window_end'),
     final_state: 'Disputed'
   });
+  _setCell(ctx, ri, 'vendor_status', 'Disputed');   // Trip_Level written LAST
   return 1;
 }
 
@@ -200,20 +204,31 @@ function _upsertStatusView(o) {
 function transferReadyTrips() {
   var ctx = _ctx(TABS.tripLevel, 'trip_id');
   var now = new Date(), moved = 0;
+  var iso = function (d) { return Utilities.formatDate(d, _tz(), "yyyy-MM-dd'T'HH:mm:ss"); };
   for (var i = ctx.headerRow + 1; i < ctx.values.length; i++) {
     var rv = ctx.values[i];
-    if (_yes(rv[ctx.idx['sent_to_vendor_flag']])) continue;
+    if (!_s(rv[ctx.idx['trip_id']])) continue;
+    if (_yes(rv[ctx.idx['sent_to_vendor_flag']])) continue;          // already transferred
+
+    // ground_review_deadline = trip_end_time + GROUND_WINDOW_HOURS (derive + persist if engine didn't set it)
     var dl = _toDate(rv[ctx.idx['ground_review_deadline']]);
-    if (!dl || now < dl) continue;                          // still within ground window
-    var ts = _nowIso();
-    _setCell(ctx, i, 'sent_to_vendor_flag', 'Yes');
-    _setCell(ctx, i, 'sent_to_vendor_timestamp', ts);
+    if (!dl) {
+      var te = _toDate(rv[ctx.idx['trip_end_time']]);
+      if (!te) continue;                                             // no completion time yet
+      dl = new Date(te.getTime() + GROUND_WINDOW_HOURS * 3600000);
+      _setCell(ctx, i, 'ground_review_deadline', iso(dl));
+    }
+    if (now < dl) continue;                                          // still inside the ground window
+
+    var ts = iso(now);
     var groundConfirmed = _yes(rv[ctx.idx['ground_confirmed']]);
+
+    // Ground_Confirmation_Log FIRST → a log failure leaves the trip un-transferred / retryable
     _appendByHeaders(LOG_TABS.ground, 'log_id', {
-      log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + (i),
+      log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + i,
       row_id: _s(rv[ctx.idx['row_id']]), trip_id: _s(rv[ctx.idx['trip_id']]),
       contract_id: _s(rv[ctx.idx['contract_id']]), transporter_oracle_id: _s(rv[ctx.idx['transporter_oracle_id']]),
-      trip_end_time: _s(rv[ctx.idx['trip_end_time']]), ground_review_deadline: _s(rv[ctx.idx['ground_review_deadline']]),
+      trip_end_time: _s(rv[ctx.idx['trip_end_time']]), ground_review_deadline: iso(dl),
       sent_to_vendor_timestamp: ts,
       ground_action_state: groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION',
       billing_before: _s(rv[ctx.idx['billing_type_system']]), billing_after: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
@@ -221,6 +236,14 @@ function transferReadyTrips() {
       replaced_vehicle_after: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       data_sent: groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL', partial_edit_flag: 'No'
     });
+
+    // open the vendor dispute window (if not already set) + default status
+    if (!_toDate(rv[ctx.idx['dispute_window_end']])) {
+      _setCell(ctx, i, 'dispute_window_end', iso(new Date(now.getTime() + DISPUTE_WINDOW_DAYS * 86400000)));
+    }
+    if (!_s(rv[ctx.idx['vendor_status']])) _setCell(ctx, i, 'vendor_status', 'Pending');
+    _setCell(ctx, i, 'sent_to_vendor_timestamp', ts);
+    _setCell(ctx, i, 'sent_to_vendor_flag', 'Yes');                 // flag LAST → marks the trip transferred
     moved++;
   }
   return 'Transferred ' + moved + ' trip(s) to vendor.';
@@ -307,3 +330,27 @@ function _applyResolvedRows(rows) {
   return 'Resolved-disputes import: applied ' + applied + ', unmatched ' + missing +
          (notes.length ? ('\n' + notes.join('\n')) : '');
 }
+
+
+/* ============================ GO-LIVE: automatic apply ============================ *
+ * During testing you click "6 · Apply vendor actions". At go-live, turn on a time-driven
+ * trigger so the drain + sync run on a schedule (no clicks). A vendor's confirm/dispute then
+ * lands in the Sheet and refreshes the panel within the interval (default 10 min).
+ * ================================================================================ */
+function scheduledDrainSync() {
+  try { transferReadyTrips(); } catch (e) { Logger.log('transfer error: ' + e.message); }
+  try { drainActions(); } catch (e) { Logger.log('drain error: ' + e.message); }
+  try { if (typeof syncToUpstash === 'function') syncToUpstash(); } catch (e) { Logger.log('sync error: ' + e.message); }
+}
+
+/** Turn ON auto-apply: time trigger running scheduledDrainSync every 10 min (replaces any sync-only trigger). */
+function createDrainSyncTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var h = t.getHandlerFunction();
+    if (h === 'scheduledDrainSync' || h === 'syncToUpstash') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('scheduledDrainSync').timeBased().everyMinutes(10).create();
+  scheduledDrainSync();
+  return 'Auto-apply is ON — vendor actions drain + sync automatically every 10 min. Use "Stop auto-apply" to turn off.';
+}
+function createDrainSyncFromMenu() { SpreadsheetApp.getUi().alert(createDrainSyncTrigger()); }

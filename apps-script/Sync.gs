@@ -110,7 +110,8 @@ function purgeUpstashVendors() {
 function stopSyncTrigger() {
   var n = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'syncToUpstash') { ScriptApp.deleteTrigger(t); n++; }
+    var h = t.getHandlerFunction();
+    if (h === 'syncToUpstash' || h === 'scheduledDrainSync') { ScriptApp.deleteTrigger(t); n++; }
   });
   return n > 0
     ? 'Auto-sync stopped (' + n + ' trigger removed). Use "Sync to Upstash NOW" for manual pushes.'

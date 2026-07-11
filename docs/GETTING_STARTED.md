@@ -45,9 +45,9 @@ Proves the panel, mapping, scoping and OTP all work, using only your Meesho Goog
 7. 🖥️ Apps Script **Project Settings (gear) → Script properties → Add**:
    - `UPSTASH_URL` = the REST URL
    - `UPSTASH_TOKEN` = the REST token
-8. 📊 **VALMO Panel → 3 · Sync to Upstash NOW.** Expect a "Sync complete — Synced N access rows + M vendor payloads" alert.
+8. 📊 **VALMO Panel → 3 · Refresh panel data (sync only).** Expect a "Sync complete — Synced N access rows + M vendor payloads" alert.
    - ☁️ In Upstash **Data Browser**, confirm keys like `access:your.email@…` and `vendor:ORC-4521` exist.
-9. 📊 **VALMO Panel → 4 · Create / reset 10-min sync trigger** — keeps Upstash fresh automatically.
+9. 📊 For hands-off running, **VALMO Panel → 6 · Turn ON auto-apply (drain + sync, 10 min)** — a time trigger that both applies vendor confirms/disputes **and** refreshes Upstash every 10 min. While testing you can skip this and use menu 3 / 4 manually. **Menu 7 · Stop auto-apply** turns it off.
 
 ## Part 3 — Vercel (the public app)
 
@@ -72,7 +72,7 @@ Proves the panel, mapping, scoping and OTP all work, using only your Meesho Goog
 ## Part 5 — Go live
 
 18. Replace sample data with real Rajkot data in the Sheet (keep headers on row 1). Add real vendor rows to `Access_Control`.
-19. The 10-min trigger keeps Upstash current. Send each vendor the Vercel URL. They log in by email — nothing to install, no Sheet access.
+19. Turn on **menu 6 · Turn ON auto-apply** so vendor actions + data refresh run automatically every ~10 min (menu 7 stops it). Send each vendor the Vercel URL. They log in by email — nothing to install, no Sheet access.
 
 ---
 
@@ -94,7 +94,7 @@ Proves the panel, mapping, scoping and OTP all work, using only your Meesho Goog
 | `email` | The vendor's login email (matched case-insensitively). One row per authorised email. |
 | `vendor_oracle_id` | The oracle this email is scoped to. Must match `transporter_oracle_id` in `Trip_Level`. |
 | `vendor_name` | Display name shown in the panel header. |
-| `role` | `vendor` for transporters. (`ground` / `admin` reserved for later stages — non-vendor roles are blocked from the vendor panel.) |
+| `role` | `vendor` (transporter panel) or `admin` (read-only all-vendor utilization view). `ground` is reserved. |
 | `cluster_scope` | Optional; leave blank for vendors (scoping is by oracle, and the vendor can filter clusters in-app). |
 | `active` | `Yes` to allow login; `No` disables the account without deleting the row. |
 
@@ -127,3 +127,27 @@ Proves the panel, mapping, scoping and OTP all work, using only your Meesho Goog
 - **Apps Script** (`Code.gs` top): `OTP_TTL_SECONDS`, `OTP_RESEND_COOLDOWN`, `OTP_MAX_ATTEMPTS`, `SESSION_TTL_SECONDS`, `APP_NAME`, `SHEET_ID`.
 - **Sync cadence** (`Sync.gs`): the `everyMinutes(10)` in `createSyncTrigger`.
 - **Vercel** (`vercel-app/lib/core.js`): `SESSION_TTL`; OTP TTL / cooldown in `api/request-otp.js`.
+
+
+## F. VALMO Panel menu reference
+
+| Item | What it does | When |
+|------|--------------|------|
+| **1 · Create / verify tabs** | Creates/repairs the 9 tabs (headers on row 1). | Once, at setup. |
+| **2 · Seed demo data** | Loads sample rows + registers your Google email as a vendor. | Testing only. |
+| **3 · Refresh panel data (sync only)** | Rebuilds `access:*` + `vendor:*` in Upstash from the Sheet. Does **not** process the action queue. | After editing the Sheet directly (contracts, Access_Control). |
+| **4 · Apply vendor actions NOW (drain + sync)** | Applies queued confirms/disputes to the Sheet, then refreshes Upstash. | The manual "apply" button while testing write-back. |
+| **5 · Import resolved disputes (CSV)** | Fills `Disputes_Log` red block, overwrites `Trip_Level`, re-surfaces trips for reconfirmation. | When an admin has resolved disputes offline. |
+| **6 · Turn ON auto-apply (drain + sync, 10 min)** | A time trigger that runs #4 automatically every ~10 min. | **Go-live** — hands-off operation. |
+| **7 · Stop auto-apply** | Removes the auto trigger. | To pause automation. |
+
+**No overlap by design:** #3 refreshes only · #4 = #3 **plus** applying the action queue · #6 = #4 **on a schedule**.
+At go-live you normally just turn on **#6**; use #1 at setup, #4 for a manual push, and #5 when resolving disputes.
+
+## G. What changes at go-live (checklist)
+1. Replace sample data with real data; keep headers on row 1.
+2. Add real vendor rows (and any admin row) to `Access_Control`; run **menu 3** to push them.
+3. Turn on **menu 6 · auto-apply** (drain + sync every ~10 min) — this is what makes confirm/dispute automatic.
+4. Vercel: confirm `PROOF_MODE=blob` + `BLOB_READ_WRITE_TOKEN` are set; **rotate** the JWT/SMTP/Upstash secrets that were shared during setup.
+5. Deploy the Apps Script **web app is NOT needed** on this (Vercel) path — only the triggers.
+6. Send vendors the Vercel URL. Nothing to install; no Sheet or Drive access for them.

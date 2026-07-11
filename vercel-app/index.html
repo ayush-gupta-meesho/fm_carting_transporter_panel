@@ -415,9 +415,6 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
         <div id="l2-veh">
           <div class="mis-context"><b>Default vehicles</b> are the vehicles locked on Day 1 of the contract — they stay fixed for the whole contract period. A <b>replacement</b> vehicle stands in for a default when one is unavailable, and its regular KMs are aggregated back to the default vehicle it replaced. Only <b>regular trip KMs</b> are aggregated at the vehicle level; adhoc trips are billed separately and shown with their amount in the trip view.</div>
           <div class="filters">
-            <div class="filt"><span class="fl-lbl">Date:</span>
-              <select><option>Jul 1–31, 2026</option><option>This Week</option></select>
-            </div>
             <div class="filt"><span class="fl-lbl">Vehicle Type:</span>
               <select id="vehTypeFilter" onchange="renderVehicles()"><option value="all">All</option><option value="default">Default only</option><option value="repl">Replacement only</option></select>
             </div>
@@ -760,7 +757,6 @@ function renderMISInto(panelId, cid){
       '<div class="subtab '+(subState[panelId]==='confirmed'?'active':'')+'" onclick="setSub(\''+panelId+'\',\'confirmed\')">Confirmed <span class="cnt" id="c_confirmed_'+panelId+'"></span></div>'+
       '</div><button class="download-btn" onclick="downloadCSV()">⬇ Download</button></div>'+
     '<div class="filters">'+
-      '<div class="filt"><span class="fl-lbl">Date:</span><select><option>Jul 1–31, 2026</option><option>This Week</option></select></div>'+
       '<div class="filt"><span class="fl-lbl">Billing Type:</span><select id="f_bill" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All</option><option value="Regular">Regular</option><option value="Adhoc">Adhoc</option></select></div>'+
       (cid?('<div class="filt"><span class="fl-lbl">Vehicle:</span><select id="f_veh" onchange="renderMISInto(\''+panelId+'\',\''+cid+'\')"><option value="all">All</option>'+(VEHICLES[cid]||[]).map(function(v){return '<option>'+v.name+'</option>';}).join('')+'</select></div>')
           :('<div class="filt"><span class="fl-lbl">Contract:</span><select id="f_contract" onchange="renderMISInto(\''+panelId+'\',\'\')"><option value="all">All</option>'+CONTRACTS.map(function(c){return '<option value="'+c.id+'">'+c.cluster+' · '+c.size+' · '+cNVeh(c)+'veh</option>';}).join('')+'</select></div>'))+

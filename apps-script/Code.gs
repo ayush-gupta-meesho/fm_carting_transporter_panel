@@ -415,7 +415,10 @@ function setupSheet() {
     'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days'],
     'Trip_Level': ['row_id','trip_id','transporter_oracle_id','contract_id','vehicle_number','vehicle_size','trip_cluster','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
-    'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active']
+    'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
+    'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
+    'Ground_Confirmation_Log': ['log_id','row_id','trip_id','contract_id','transporter_oracle_id','trip_end_time','ground_review_deadline','sent_to_vendor_timestamp','ground_action_state','billing_before','billing_after','replaced_vehicle_before','replaced_vehicle_after','data_sent','partial_edit_flag'],
+    'Confirmation_Status_View': ['row_id','trip_id','contract_id','transporter_oracle_id','sent_to_vendor_timestamp','vendor_status','status_updated_at','dispute_id','dispute_status','reconfirm_status','dispute_window_end','final_state']
   };
   Object.keys(schema).forEach(function (name) {
     var sh = ss.getSheetByName(name) || ss.insertSheet(name);
@@ -504,12 +507,12 @@ function onOpen() {
     .addItem('1 · Create / verify tabs', 'setupSheet')
     .addItem('2 · Seed demo data (testing)', 'seedDemo')
     .addSeparator()
-    .addItem('3 · Sync to Upstash NOW', 'syncNowFromMenu')
-    .addItem('4 · Create / reset 10-min sync trigger', 'createSyncTrigger')
-    .addItem('5 · Stop auto-sync', 'stopSyncFromMenu')
+    .addItem('3 · Refresh panel data (sync only)', 'syncNowFromMenu')
+    .addItem('4 · Apply vendor actions NOW (drain + sync)', 'drainAndSyncFromMenu')
+    .addItem('5 · Import resolved disputes (CSV)', 'importResolvedDisputes')
     .addSeparator()
-    .addItem('6 · Apply vendor actions (drain + sync)', 'drainAndSyncFromMenu')
-    .addItem('7 · Import resolved disputes (CSV)', 'importResolvedDisputes')
+    .addItem('6 · Turn ON auto-apply (drain + sync, 10 min)', 'createDrainSyncFromMenu')
+    .addItem('7 · Stop auto-apply', 'stopSyncFromMenu')
     .addToUi();
 }
 

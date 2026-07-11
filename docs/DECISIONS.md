@@ -29,3 +29,16 @@ Answers to the build-plan open items (§F, §H), and how the panel implements th
 ## Deferred by scope (not gaps)
 - Confirm / bulk-confirm, dispute capture, admin CSV resolution, reconfirmation, monthly archive (build-plan C4–C7).
 - CSV download inside the Apps Script iframe may be blocked by the sandbox; it works on the Vercel deploy (to be verified there).
+
+## Ownership: data engine vs Apps Script (confirmed)
+- **Data engine** = static facts only. On trip completion it writes the `Trip_Level` row (ids, oracle, contract, vehicle, `total_trip_km`, billing classification, `trip_end_time`) and **leaves `sent_to_vendor_flag` blank**. It does not run any workflow.
+- **Apps Script** = all workflow. The cycle (menu 4 manual, menu 6 auto) runs **transfer → drain vendor actions → sync**:
+  - `transferReadyTrips()` derives `ground_review_deadline` (= `trip_end_time + GROUND_WINDOW_HOURS`, default 24h), and once past it: writes `Ground_Confirmation_Log`, opens the vendor dispute window (`dispute_window_end = now + DISPUTE_WINDOW_DAYS`, default 15), sets `vendor_status = Pending`, flips `sent_to_vendor_flag = Yes`.
+  - `drainActions()` applies vendor confirm/dispute; the resolved-CSV import handles admin resolution → reconfirmation.
+- Config knobs at the top of `Actions.gs`: `GROUND_WINDOW_HOURS`, `DISPUTE_WINDOW_DAYS`.
+
+## Month-end billing — out of this panel's scope
+Billing (per-contract payable + per-contract vehicle-usage patterns) is computed in a **separate sheet**, not in this panel. The reference formula is `fixed_monthly_value + max(0, Σ regular non-RTO total_trip_km − total_km_slab) × ex_km_rate + Σ adhoc_amount`, sourced from `Trip_Level` (final columns) + `Contract_Info`, using only settled (Confirmed/Reconfirmed) trips per `Confirmation_Status_View`. Not built here.
+
+## Date filter removed
+The Trip-MIS and Vehicle-Level "Date" dropdowns were non-functional placeholders from the v5 mock and have been removed from both panels. (The contract *duration* in the L2 header is still shown from `Contract_Info`.)
