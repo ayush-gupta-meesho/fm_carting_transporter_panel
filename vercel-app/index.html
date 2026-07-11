@@ -945,7 +945,7 @@ function proofPanelHtml(cid){
     : '<input type="file" id="dsp_proof" accept="image/*,application/pdf" style="font-size:12px;"/><div style="font-size:10.5px;color:var(--muted);margin-top:4px;">Challan, GPS trace, photo or PDF · max 4MB.</div>';
   return '<div class="disp-panel show" style="border-style:dashed;"><div class="dp-title">Upload Proof <span style="color:var(--red)">*</span></div>'
     + proofField
-    + '<div class="dp-field" style="margin-top:10px;"><label>Callback number</label><input id="dsp_callback" placeholder="+91 - mobile number"/></div>'
+    + '<div class="dp-field" style="margin-top:10px;"><label>Callback number <span style="color:var(--red)">*</span></label><input id="dsp_callback" placeholder="+91 - mobile number"/></div>'
     + '<div class="dp-field" style="margin-top:8px;"><label>Description</label><input id="dsp_desc" placeholder="Provide more details"/></div></div>';
 }
 function disputeFormUrl(cid){
@@ -975,12 +975,21 @@ async function submitDispute(){
   if(!disputeTrip) return;
   var cats=DISPUTE_CATS.filter(function(c){ var el=document.querySelector('#chk-'+c.key+' input'); return el&&el.checked; }).map(function(c){return c.key;});
   if(!cats.length){ alert('Select at least one issue.'); return; }
+  // opened category fields are mandatory
+  var _vv=document.getElementById('dsp_value'), _rv=document.getElementById('dsp_contract'), _av=document.getElementById('dsp_aggveh');
+  if(cats.indexOf('value')>-1 && (!_vv || !String(_vv.value).trim())){ alert('Please enter the correct '+(disputeTrip.billing==='Adhoc'?'amount':'KM')+'.'); return; }
+  if(cats.indexOf('rfq')>-1 && (!_rv || !String(_rv.value).trim())){ alert('Please enter the correct Contract ID.'); return; }
+  if(cats.indexOf('billing')>-1 && disputeTrip.billing==='Adhoc' && (!_av || !_av.value)){ alert('Please select the default vehicle to aggregate the KMs against.'); return; }
+  // callback number is mandatory (agents call this to resolve)
+  var _cb=String((document.getElementById('dsp_callback')||{}).value||'').trim();
+  if(!_cb){ alert('Callback number is required so our team can reach you.'); return; }
+  if(!/^[0-9+\-\s]{7,15}$/.test(_cb)){ alert('Please enter a valid callback number.'); return; }
   var claim={};
   if(cats.indexOf('billing')>-1){ claim.claim_billing_type = disputeTrip.billing==='Adhoc'?'Regular':'Adhoc'; var av=document.getElementById('dsp_aggveh'); if(av) claim.claim_aggregate_vehicle=av.value; }
   if(cats.indexOf('value')>-1){ var vv=document.getElementById('dsp_value'); if(vv){ if(disputeTrip.billing==='Adhoc') claim.claim_amount=vv.value; else claim.claim_km=vv.value; } }
   if(cats.indexOf('rfq')>-1){ var rv=document.getElementById('dsp_contract'); if(rv) claim.claim_contract_id=rv.value; }
   var desc=(document.getElementById('dsp_desc')||{}).value||'';
-  var cb=(document.getElementById('dsp_callback')||{}).value||'';
+  var cb=_cb;
   var btn=document.getElementById('dispSubmitBtn'); btn.disabled=true; btn.textContent='Submitting…';
   try{
     var proofUrl='';

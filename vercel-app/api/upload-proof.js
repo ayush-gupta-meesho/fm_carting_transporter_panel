@@ -38,6 +38,6 @@ module.exports = async (req, res) => {
     });
     return res.json({ ok: true, url: blob.url });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Upload failed. Please retry.' });
+    return res.status(500).json({ ok: false, error: 'Upload failed: ' + (err && err.message ? err.message : 'unknown (check BLOB_READ_WRITE_TOKEN)') });
   }
 };
