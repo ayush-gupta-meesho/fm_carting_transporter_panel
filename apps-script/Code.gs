@@ -238,6 +238,38 @@ function getVendorData(token) {
   }
 }
 
+/* Latest dispute per trip for THIS vendor, shaped for the read-only View-Dispute dialog.
+ * Reads Disputes_Log (returns {} if the tab/rows don't exist yet). Keeps the newest by raised_at,
+ * so a re-disputed trip shows its most recent round + the resolution that preceded it. */
+function _disputesTab() {
+  try { return _readTab('Disputes_Log', 'dispute_id'); } catch (e) { return []; }
+}
+function _buildDisputeMap(oracle) {
+  var rows = _disputesTab(), map = {}, orc = _s(oracle);
+  rows.forEach(function (d) {
+    if (_s(d.transporter_oracle_id) !== orc) return;              // scope to this vendor
+    var tid = _s(d.trip_id); if (!tid) return;
+    var ts = _s(d.raised_at);
+    if (map[tid] && _s(map[tid]._raised) >= ts) return;          // keep the latest round
+    map[tid] = {
+      _raised: ts,
+      id: _s(d.dispute_id), raised_at: _s(d.raised_at) ? _fmtShort(d.raised_at) : '',
+      categories: _s(d.categories) ? _s(d.categories).split('|') : [],
+      claim_billing_type: _s(d.claim_billing_type), claim_aggregate_vehicle: _s(d.claim_aggregate_vehicle),
+      claim_km: _s(d.claim_km), claim_amount: _s(d.claim_amount), claim_contract_id: _s(d.claim_contract_id),
+      description: _s(d.vendor_description), callback: _s(d.callback_number), proof_url: _s(d.proof_url),
+      status: _s(d.dispute_status), reconfirm_status: _s(d.reconfirm_status),
+      orig_billing_type: _s(d.orig_billing_type), orig_total_km: _s(d.orig_total_km), orig_adhoc_amount: _s(d.orig_adhoc_amount),
+      resolution_note: _s(d.resolution_note), resolved_billing_type: _s(d.resolved_billing_type),
+      resolved_km: _s(d.resolved_km), resolved_amount: _s(d.resolved_amount),
+      resolved_aggregate_vehicle: _s(d.resolved_aggregate_vehicle), resolved_contract_id: _s(d.resolved_contract_id),
+      resolved_by: _s(d.resolved_by), resolved_at: _s(d.resolved_at) ? _fmtShort(d.resolved_at) : ''
+    };
+  });
+  Object.keys(map).forEach(function (k) { delete map[k]._raised; });
+  return map;
+}
+
 function _buildVendorPayload(oracle) {
   oracle = _s(oracle);
   var ci = _readTab(TABS.contractInfo,     'contract_id');
@@ -252,6 +284,8 @@ function _buildVendorPayload(oracle) {
   var myTrips = tl.filter(function (t) {
     return _s(t.transporter_oracle_id) === oracle && _yes(t.sent_to_vendor_flag);
   });
+
+  var dmap = _buildDisputeMap(oracle);   // trip_id -> latest dispute detail (for the View-Dispute dialog)
 
   var vehiclesByContract = {}; // contract_id -> [Contract_Vehicles rows]
   cv.forEach(function (v) {
@@ -342,7 +376,8 @@ function _buildVendorPayload(oracle) {
         amt:       isAdhoc ? _num(t.adhoc_amount) : null,
         rto:       rto ? true : undefined,
         status:    (function(v){ return v==='confirmed'||v==='reconfirmed' ? 'confirmed' : (v==='disputed' ? 'disputed' : (v==='reconfirm' ? 'reconfirm' : 'pending')); })(_low(t.vendor_status)),
-        win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end)
+        win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
+        disp:      dmap[_s(t.trip_id)] || null
       };
     });
 

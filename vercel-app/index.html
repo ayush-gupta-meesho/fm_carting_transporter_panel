@@ -461,6 +461,22 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
   </div>
 </div>
 
+<!-- ══ VIEW DISPUTE MODAL (read-only) ══ -->
+<div class="modal-overlay" id="viewDisputeModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mh-title">Dispute details — <span id="vdTripId"></span></div>
+      <button class="mh-close" onclick="closeViewDispute()">×</button>
+    </div>
+    <div class="modal-body" id="vdBody"></div>
+    <div class="modal-foot">
+      <div class="foot-btns" style="margin-left:auto;">
+        <button class="btn btn-ghost" onclick="closeViewDispute()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ══════════════════════════════════════════════════════════════════════════
  *  CLIENT  —  data is fetched from the Vercel API (/api/*) over fetch(); cookie session.
@@ -816,6 +832,7 @@ function renderMISInto(panelId, cid){
     else if(t.status==='disputed') statusCell='<div style="color:var(--violet);font-weight:700;">⚑ Disputed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'<div class="st-win">under review</div>');
     else if(t.status==='reconfirm') statusCell='<div style="color:var(--amber);font-weight:700;">↻ Pending Reconfirmation</div><div class="st-win">review the correction</div>';
     else statusCell='<div class="st-pending">Pending Confirmation</div><div class="st-win">Dispute open till '+(t.win||'—')+'</div>';
+    if((t.status==='disputed'||t.status==='reconfirm') && t.disp) statusCell+='<div class="st-win" style="margin-top:3px;"><a href="#" onclick="viewDispute(\''+t.cid+'\',\''+t.id+'\');return false;" style="color:var(--blue);font-weight:600;text-decoration:underline;">View dispute</a></div>';
     var checkCell = t.status==='pending'
       ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
       : '<td></td>';
@@ -844,6 +861,12 @@ function routeHtml(route){
 }
 
 /* ══════════════ CSV DOWNLOAD (read-only export of what the vendor sees) ══════════════ */
+function statusLabel(s){
+  if(s==='disputed') return 'Disputed';
+  if(s==='reconfirm') return 'Pending Reconfirmation';
+  if(s==='confirmed') return 'Confirmed';
+  return 'Pending Confirmation';
+}
 function downloadCSV(){
   var headers=['Contract ID','Cluster','Vehicle Size','Contract Hours','Trip ID','Trip Vehicle Size','Vehicle No','Vehicle Tag','Original Vehicle (if replacement)','Actual Route','Billing Type','Replacement Tag','Completed Time','KM','Adhoc Amount (INR)','KM Accumulated','Trip Status','Dispute Window'];
   var rows=[headers];
@@ -856,7 +879,7 @@ function downloadCSV(){
       var kmAccum=t.rto?'No (RTO)':(t.billing==='Regular'?'Yes':'N/A (Adhoc)');
       var tagV=(VEHICLES[c.id]||[]).find(function(v){return v.name===t.veh;});
       rows.push([c.id,c.cluster,c.size,c.hours,t.id,t.size,t.vehNo,(tagV?tagV.tag:''),origVeh,
-        (t.route||[]).join(' > '),t.billing,replTag,t.completed,km,amt,kmAccum,(t.status==='pending'?'Pending Confirmation':'Confirmed'),t.win||'']);
+        (t.route||[]).join(' > '),t.billing,replTag,t.completed,km,amt,kmAccum,statusLabel(t.status),t.win||'']);
     });
   });
   var csv=rows.map(function(r){ return r.map(function(cell){ var s=String(cell==null?'':cell); return (s.indexOf(',')>-1||s.indexOf('"')>-1||s.indexOf('\n')>-1)?'"'+s.replace(/"/g,'""')+'"':s; }).join(','); }).join('\n');
@@ -925,6 +948,46 @@ function toggleCat(key){ var chk=document.querySelector('#chk-'+key+' input');
   document.getElementById('chk-'+key).classList.toggle('checked',chk.checked);
   document.getElementById('panel-'+key).classList.toggle('show',chk.checked); }
 function closeDispute(){ document.getElementById('disputeModal').classList.remove('open'); disputeTrip=null; }
+/* ── read-only View Dispute dialog ── */
+function _catLabel(k){ var f=DISPUTE_CATS.find(function(c){return c.key===k;}); return f?f.label:k; }
+function _vdRow(label,val){ return val?('<div style="display:flex;gap:10px;padding:5px 0;border-top:1px solid #EEF1F6;"><div style="min-width:150px;color:var(--muted);font-size:12px;">'+label+'</div><div style="font-size:13px;font-weight:600;flex:1;">'+val+'</div></div>'):''; }
+function viewDispute(cid,tid){
+  var t=_findTrip(cid,tid); if(!t||!t.disp){ alert('No dispute details available yet — they appear after the next sync.'); return; }
+  var d=t.disp;
+  document.getElementById('vdTripId').textContent=tid;
+  var cats=(d.categories||[]).map(function(c){return '<span class="badge" style="background:#EEF1F6;color:#3A4353;margin:2px 4px 2px 0;display:inline-block;">'+_catLabel(c)+'</span>';}).join('');
+  var resolved=(String(d.status||'').toLowerCase()==='resolved')||d.resolved_at||d.resolution_note;
+  var pill=resolved
+    ? '<span class="badge" style="background:#E7F6EC;color:#1E7A3D;">Resolved</span>'
+    : '<span class="badge" style="background:#FDECEC;color:#B4232A;">Open — under review</span>';
+  var claimVal=d.claim_km?(d.claim_km+' km'):(d.claim_amount?money(d.claim_amount):'');
+  var h='';
+  h+='<div style="margin-bottom:12px;">'+pill+'<span style="color:var(--muted);font-size:12px;margin-left:8px;">Raised '+(d.raised_at||'—')+(d.id?(' · '+d.id):'')+'</span></div>';
+  h+='<div class="disp-cat-title">What you reported</div>';
+  h+='<div style="margin:6px 0 4px;">'+(cats||'<span style="color:var(--muted);">—</span>')+'</div>';
+  h+=_vdRow('Corrected value',claimVal);
+  h+=_vdRow('Change billing to',d.claim_billing_type);
+  h+=_vdRow('Aggregate against',d.claim_aggregate_vehicle);
+  h+=_vdRow('Correct Contract ID',d.claim_contract_id);
+  h+=_vdRow('Your note',d.description);
+  h+=_vdRow('Callback number',d.callback);
+  if(d.proof_url) h+=_vdRow('Proof','<a href="'+d.proof_url+'" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:underline;">Open uploaded file ↗</a>');
+  if(resolved){
+    h+='<div style="margin-top:16px;padding:12px;background:#F2FBF5;border:1px solid #BFE6CC;border-radius:8px;">';
+    h+='<div class="disp-cat-title" style="color:#1E7A3D;">Resolution</div>';
+    h+=_vdRow('Outcome note',d.resolution_note);
+    h+=_vdRow('Resolved KM',d.resolved_km);
+    h+=_vdRow('Resolved amount',d.resolved_amount?money(d.resolved_amount):'');
+    h+=_vdRow('Resolved billing',d.resolved_billing_type);
+    h+=_vdRow('Resolved by',d.resolved_by);
+    h+=_vdRow('Resolved on',d.resolved_at);
+    if(t.status==='reconfirm') h+='<div class="st-win" style="margin-top:8px;color:var(--amber);font-weight:600;">Review this on the trip row — Accept if correct, or Re-dispute.</div>';
+    h+='</div>';
+  }
+  document.getElementById('vdBody').innerHTML=h;
+  document.getElementById('viewDisputeModal').classList.add('open');
+}
+function closeViewDispute(){ document.getElementById('viewDisputeModal').classList.remove('open'); }
 
 function catPanelHtml(key,trip,cid){
   var defs=(VEHICLES[cid]||[]).filter(function(v){return v.tag==='default';});
