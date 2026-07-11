@@ -488,9 +488,9 @@ var CONTRACTS = [], VEHICLES = {}, TRIPS = {};
 var LOGIN_EMAIL = '';
 
 /* ---------------- derived helpers (from Contract tiers) ---------------- */
-function cNVeh(c){ return c.tiers.reduce(function(s,r){return s+r.count;},0); }
-function cSlabKm(c){ return c.tiers.reduce(function(s,r){return s+r.count*r.slabPerVeh;},0); }
-function cFixedValue(c){ return c.tiers.reduce(function(s,r){return s+r.count*r.valuePerVeh;},0); }
+function cNVeh(c){ return (c.tiers||[]).reduce(function(s,r){return s+r.count;},0)||c.nveh||0; }
+function cSlabKm(c){ return (c.tiers||[]).reduce(function(s,r){return s+r.count*r.slabPerVeh;},0)||c.slabKm||0; }
+function cFixedValue(c){ return (c.tiers||[]).reduce(function(s,r){return s+r.count*r.valuePerVeh;},0); }
 
 var money = function(n){ return '₹' + Number(n||0).toLocaleString('en-IN'); };
 function contractById(id){ return CONTRACTS.find(function(c){return c.id===id;}); }
