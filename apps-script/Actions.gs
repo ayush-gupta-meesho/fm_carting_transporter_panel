@@ -205,6 +205,9 @@ function _upsertStatusView(o) {
 function transferReadyTrips() {
   var ctx = _ctx(TABS.tripLevel, 'trip_id');
   var now = new Date(), moved = 0;
+  var _cv = _readTab('Contract_Vehicles', 'contract_id');
+  var defBy = {};   // contract_id -> { vehicle_number: true }  (default / contracted vehicles)
+  _cv.forEach(function (v) { var cd = _s(v.contract_id); (defBy[cd] = defBy[cd] || {})[_s(v.vehicle_number)] = true; });
   var iso = function (d) { return Utilities.formatDate(d, _tz(), "yyyy-MM-dd'T'HH:mm:ss"); };
   for (var i = ctx.headerRow + 1; i < ctx.values.length; i++) {
     var rv = ctx.values[i];
@@ -224,6 +227,20 @@ function transferReadyTrips() {
     var ts = iso(now);
     var groundConfirmed = _yes(rv[ctx.idx['ground_confirmed']]);
 
+    // GUARD: a Regular classification on a NON-default vehicle needs a valid replaced-default mapping,
+    // else its KM cannot fold into any default. If incomplete, discard the ground edit and transfer the
+    // earlier (system) info instead; the trip still transfers but the ground log is marked partial.
+    var _cid = _s(rv[ctx.idx['contract_id']]), _vno = _s(rv[ctx.idx['vehicle_number']]);
+    var _finalBill = _low(rv[ctx.idx['billing_type_final']]) || _low(rv[ctx.idx['billing_type_system']]);
+    var _isDefault = !!(defBy[_cid] && defBy[_cid][_vno]);
+    var _replTarget = _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]);
+    var _replOK = !!(_replTarget && defBy[_cid] && defBy[_cid][_replTarget]);
+    var _partial = (_finalBill === 'regular' && !_isDefault && !_replOK);
+    if (_partial) {
+      if (_s(rv[ctx.idx['billing_type_final']])) _setCell(ctx, i, 'billing_type_final', '');
+      if (_s(rv[ctx.idx['replaced_default_vehicle_final']])) _setCell(ctx, i, 'replaced_default_vehicle_final', '');
+    }
+
     // Ground_Confirmation_Log FIRST → a log failure leaves the trip un-transferred / retryable
     _appendByHeaders(LOG_TABS.ground, 'log_id', {
       log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + i,
@@ -235,7 +252,8 @@ function transferReadyTrips() {
       billing_before: _s(rv[ctx.idx['billing_type_system']]), billing_after: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
       replaced_vehicle_before: _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       replaced_vehicle_after: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
-      data_sent: groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL', partial_edit_flag: 'No'
+      data_sent: _partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL'),
+      partial_edit_flag: _partial ? 'Yes' : 'No'
     });
 
     // open the vendor dispute window (if not already set) + default status

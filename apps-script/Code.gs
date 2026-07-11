@@ -312,7 +312,8 @@ function _buildVendorPayload(oracle, opts) {
     // Vx label map: defaults ordered by day1_order (fallback: sheet order)
     defaults.sort(function (a, b) { return _num(a.day1_order) - _num(b.day1_order); });
     var labelOf = {}; // vehicle_number -> "V1"
-    defaults.forEach(function (v, i) { labelOf[_s(v.vehicle_number)] = 'V' + (i + 1); });
+    var defSet = {};  // default (contracted) vehicle numbers for this contract
+    defaults.forEach(function (v, i) { labelOf[_s(v.vehicle_number)] = 'V' + (i + 1); defSet[_s(v.vehicle_number)] = true; });
 
     var cTrips = tripsByContract[cid] || [];
 
@@ -353,7 +354,7 @@ function _buildVendorPayload(oracle, opts) {
       var no = _s(t.vehicle_number);
       var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Regular';
       var isAdhoc = _low(billing) === 'adhoc';
-      var isRepl  = _yes(t.replacement_flag_system) || _low(t.replacement_flag_system) === 'repl';
+      var isRepl  = (!!no && !defSet[no]) || _yes(t.replacement_flag_system) || _low(t.replacement_flag_system) === 'repl';
       var km      = _num(t.total_trip_km);
       var rto     = _low(t.challan_type) === 'rto' || (!_yes(t.km_accumulated_flag) && km === 0 && !isAdhoc && (_s(t.km_accumulated_flag) !== ''));
 

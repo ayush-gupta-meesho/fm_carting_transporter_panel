@@ -566,6 +566,7 @@ async function loadPanel(){
     if(!r||!r.ok){ alert('Could not load data: '+((r&&r.error)||'unknown')); return; }
     var d=r.data;
     if(d.admin){ renderAdmin(d); return; }
+    IS_ADMIN=false;
     CONTRACTS=d.contracts||[]; VEHICLES=d.vehicles||{}; TRIPS=d.trips||{};
     setHeader(d.vendor||{});
     showL1();
@@ -1113,6 +1114,7 @@ document.addEventListener('DOMContentLoaded', async function(){
       var r=await res.json();
       if(r&&r.ok){
         if(r.data.admin){ renderAdmin(r.data); return; }
+        IS_ADMIN=false;
         CONTRACTS=r.data.contracts||[]; VEHICLES=r.data.vehicles||{}; TRIPS=r.data.trips||{};
         setHeader(r.data.vendor||{});
         document.getElementById('loginScreen').style.display='none';
