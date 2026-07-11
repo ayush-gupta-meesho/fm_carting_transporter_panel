@@ -270,7 +270,8 @@ function _buildDisputeMap(oracle) {
   return map;
 }
 
-function _buildVendorPayload(oracle) {
+function _buildVendorPayload(oracle, opts) {
+  opts = opts || {};
   oracle = _s(oracle);
   var ci = _readTab(TABS.contractInfo,     'contract_id');
   var cv = _readTab(TABS.contractVehicles, 'contract_id');
@@ -282,7 +283,7 @@ function _buildVendorPayload(oracle) {
   myContracts.forEach(function (c) { myContractIds[_s(c.contract_id)] = true; });
 
   var myTrips = tl.filter(function (t) {
-    return _s(t.transporter_oracle_id) === oracle && _yes(t.sent_to_vendor_flag);
+    return _s(t.transporter_oracle_id) === oracle && (opts.allTrips || _yes(t.sent_to_vendor_flag));
   });
 
   var dmap = _buildDisputeMap(oracle);   // trip_id -> latest dispute detail (for the View-Dispute dialog)
@@ -344,6 +345,10 @@ function _buildVendorPayload(oracle) {
     var contractRegKm = 0;
     var lastTripDate = null;
 
+    var foldKm = {}, foldCnt = {};   // admin: replacement KM/trips folded into the default they stood in for
+    var vehSlab = {};                // vehicle_number -> pegged_km_slab (defaults only)
+    defaults.forEach(function (v) { vehSlab[_s(v.vehicle_number)] = _num(v.pegged_km_slab); });
+
     var mappedTrips = cTrips.map(function (t) {
       var no = _s(t.vehicle_number);
       var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Regular';
@@ -360,6 +365,9 @@ function _buildVendorPayload(oracle) {
       if (d && (!lastTripDate || d > lastTripDate)) lastTripDate = d;
 
       var replForNo = _s(t.replaced_default_vehicle_final) || _s(t.replaced_default_vehicle_system);
+      if (opts.admin && !isAdhoc && isRepl && !rto && replForNo) {
+        foldKm[replForNo] = (foldKm[replForNo] || 0) + km; foldCnt[replForNo] = (foldCnt[replForNo] || 0) + 1;
+      }
       var route = _buildRoute(t);
 
       return {
@@ -384,8 +392,20 @@ function _buildVendorPayload(oracle) {
     // vehicle objects
     function vehObj(no, size, tag) {
       var a = agg[no] || newAgg();
-      return { name: labelOf[no] || no, no: no, size: size, tag: tag,
+      var o = { name: labelOf[no] || no, no: no, size: size, tag: tag,
                km: a.km, regTrips: a.regTrips, adhocTrips: a.adhocTrips, total: a.regTrips + a.adhocTrips };
+      if (opts.admin) {
+        var isDef = (tag === 'default');
+        o.slab = isDef ? (vehSlab[no] || 0) : 0;
+        o.replFoldedKm = isDef ? (foldKm[no] || 0) : 0;
+        o.replFolded = isDef ? (foldCnt[no] || 0) : 0;
+        o.effectiveKm = a.km + o.replFoldedKm;                 // default estimation incl. replacement KMs
+        if (isDef && o.slab > 0) {
+          var pf = _projFields(o.effectiveKm, o.slab, c.contract_start_date, c.contract_end_date);
+          o.projKm = pf.projected; o.projPct = pf.projPct; o.sizing = pf.sizing;
+        }
+      }
+      return o;
     }
     var vehList = defaults.map(function (v) { return vehObj(_s(v.vehicle_number), _s(c.vehicle_size), 'default'); })
       .concat(replVehicles.map(function (v) { return vehObj(v.no, _s(c.vehicle_size), 'repl'); }));
@@ -409,6 +429,13 @@ function _buildVendorPayload(oracle) {
       lastTrip: lastTripDate ? _fmtLong(lastTripDate) : '—',
       tiers:    tiers
     });
+    if (opts.admin) {
+      var _c = CONTRACTS[CONTRACTS.length - 1];
+      var _slabKm = tiers.reduce(function (s, r) { return s + r.count * r.slabPerVeh; }, 0);
+      var _cpf = _projFields(_c.regKm, _slabKm, c.contract_start_date, c.contract_end_date);
+      _c.oracle = oracle; _c.slabKm = _slabKm;
+      _c.projKm = _cpf.projected; _c.projPct = _cpf.projPct; _c.sizing = _cpf.sizing;
+    }
   });
 
   return {
@@ -568,48 +595,45 @@ function syncNowFromMenu() {
  *   expected_to_date = slab × elapsed/total ;  projected = actual × total/elapsed
  *   status: OVER (projected > slab), UNDER (projected < 90% slab), else ON-TRACK.
  * ================================================================================================*/
+function _projFields(actual, slab, startRaw, endRaw) {
+  var now = new Date();
+  var start = _toDate(startRaw), end = _toDate(endRaw);
+  var totalDays = (start && end) ? Math.max(1, (end - start) / 86400000) : 30;
+  var elapsed = start ? Math.min(Math.max((now - start) / 86400000, 0), totalDays) : totalDays;
+  var projected = elapsed > 0 ? Math.round(actual * (totalDays / elapsed)) : actual;
+  var projPct = slab > 0 ? Math.round(projected / slab * 100) : 0;
+  var sizing = projected > slab * 1.02 ? 'over' : (projected < slab * 0.90 ? 'under' : 'good');
+  return { projected: projected, projPct: projPct, sizing: sizing, expected: Math.round(slab * (elapsed / totalDays)) };
+}
+
+/* ADMIN payload = the SAME vendor screens (contracts -> vehicles -> trips) across ALL vendors,
+ * built over ALL completed trips (opts.allTrips) and read-only (opts.admin adds projection tags +
+ * folds replacement KMs into the default they stood in for). No new enums — reuses _buildVendorPayload. */
 function _buildAdminPayload() {
   var ci = _readTab(TABS.contractInfo, 'contract_id');
-  var cv = _readTab(TABS.contractVehicles, 'contract_id');
-  var tl = _readTab(TABS.tripLevel, 'trip_id');
+  var oracles = [], seen = {};
+  ci.forEach(function (c) { var o = _s(c.vendor_oracle_id); if (o && !seen[o]) { seen[o] = 1; oracles.push(o); } });
 
-  var slabBy = {};
-  cv.forEach(function (v) { var cid = _s(v.contract_id); slabBy[cid] = (slabBy[cid] || 0) + _num(v.pegged_km_slab); });
-
-  var actualBy = {};
-  tl.forEach(function (t) {
-    var cid = _s(t.contract_id);
-    var billing = _low(t.billing_type_final) || _low(t.billing_type_system);
-    var rto = _low(t.challan_type) === 'rto';
-    if (billing !== 'adhoc' && !rto) actualBy[cid] = (actualBy[cid] || 0) + _num(t.total_trip_km);
-  });
-
-  var now = new Date(), out = [], over = 0, under = 0, onTrack = 0, totSlab = 0, totActual = 0;
-  ci.forEach(function (c) {
-    var cid = _s(c.contract_id);
-    var slab = slabBy[cid] || _num(c.total_km_slab) || 0;
-    var actual = Math.round(actualBy[cid] || 0);
-    var start = _toDate(c.contract_start_date), end = _toDate(c.contract_end_date);
-    var totalDays = (start && end) ? Math.max(1, (end - start) / 86400000) : 30;
-    var elapsed = start ? Math.min(Math.max((now - start) / 86400000, 0), totalDays) : totalDays;
-    var expected = slab * (elapsed / totalDays);
-    var projected = elapsed > 0 ? Math.round(actual * (totalDays / elapsed)) : actual;
-    var status = projected > slab * 1.02 ? 'OVER' : (projected < slab * 0.90 ? 'UNDER' : 'ON-TRACK');
-    if (status === 'OVER') over++; else if (status === 'UNDER') under++; else onTrack++;
-    totSlab += slab; totActual += actual;
-    out.push({
-      contract_id: cid, vendor_oracle_id: _s(c.vendor_oracle_id), vendor_name: _s(c.vendor_name),
-      cluster: _s(c.cluster), size: _s(c.vehicle_size), hours: _s(c.hours_slab),
-      slab: slab, actual: actual, expected: Math.round(expected), projected: projected,
-      utilPct: slab > 0 ? Math.round(actual / slab * 100) : 0,
-      projPct: slab > 0 ? Math.round(projected / slab * 100) : 0,
-      overRate: _num(c.ex_km_rate), duration: _fmtRange(c.contract_start_date, c.contract_end_date), status: status
+  var CONTRACTS = [], VEHICLES = {}, TRIPS = {}, clusters = {};
+  var over = 0, under = 0, onTrack = 0, totSlab = 0, totActual = 0;
+  oracles.forEach(function (o) {
+    var p = _buildVendorPayload(o, { allTrips: true, admin: true });
+    p.contracts.forEach(function (c) {
+      CONTRACTS.push(c);
+      if (c.sizing === 'over') over++; else if (c.sizing === 'under') under++; else onTrack++;
+      totSlab += (c.slabKm || 0); totActual += (c.regKm || 0);
+      if (c.cluster) clusters[c.cluster] = true;
     });
+    Object.keys(p.vehicles).forEach(function (k) { VEHICLES[k] = p.vehicles[k]; });
+    Object.keys(p.trips).forEach(function (k) { TRIPS[k] = p.trips[k]; });
   });
+
   return {
     admin: true,
-    generated_at: Utilities.formatDate(now, _tz(), 'd MMM yyyy, HH:mm'),
-    summary: { total: out.length, over: over, under: under, onTrack: onTrack, totalSlab: totSlab, totalActual: totActual },
-    contracts: out
+    generated_at: Utilities.formatDate(new Date(), _tz(), 'd MMM yyyy, HH:mm'),
+    vendor: { name: 'All Vendors \u2014 Sizing View', oracle: 'ADMIN',
+              contractCount: CONTRACTS.length, clusters: Object.keys(clusters).length, mtdKm: Math.round(totActual) },
+    summary: { total: CONTRACTS.length, over: over, under: under, onTrack: onTrack, totalSlab: totSlab, totalActual: totActual },
+    contracts: CONTRACTS, vehicles: VEHICLES, trips: TRIPS
   };
 }

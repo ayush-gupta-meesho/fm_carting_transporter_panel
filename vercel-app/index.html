@@ -626,6 +626,10 @@ function populateL1Filters(){
   clusters.sort(); sizes.sort(); hours.sort();
   fillSelect('l1Cluster', clusters); fillSelect('l1Size', sizes); fillSelect('l1Hours', hours);
 }
+var IS_ADMIN=false;
+var SIZING={over:['#FBEDEB','#C0392B','Over-contracted'],good:['#E6F5EC','#1E7E34','Well-sized'],under:['#FFF3DE','#B77503','Under-contracted']};
+function sizingBadge(c){ var s=SIZING[c.sizing]||SIZING.good; return '<div style="margin-top:5px;font-size:9.5px;font-weight:700;padding:2px 8px;border-radius:10px;display:inline-block;background:'+s[0]+';color:'+s[1]+';" title="Projected month-end: '+Number(c.projKm||0).toLocaleString('en-IN')+' km = '+(c.projPct||0)+'% of slab">'+s[2]+' · '+(c.projPct||0)+'% proj</div>'; }
+function sizingPill(sz,pct){ var s=SIZING[sz]||SIZING.good; return '<span style="font-size:9px;font-weight:700;padding:1px 6px;border-radius:9px;background:'+s[0]+';color:'+s[1]+';">'+s[2]+' · '+(pct||0)+'%</span>'; }
 function renderContracts(){
   populateL1Filters();
   var q=(document.getElementById('l1Search').value||'').toLowerCase();
@@ -641,7 +645,8 @@ function renderContracts(){
     return true;
   });
 
-  document.getElementById('asCount').textContent='You have '+pendingCount()+' trips pending confirmation';
+  if(IS_ADMIN){ var _s=(ADMIN_DATA&&ADMIN_DATA.summary)||{}; document.getElementById('asCount').textContent=(_s.over||0)+' over-utilised · '+(_s.under||0)+' under-utilised · '+(_s.onTrack||0)+' on track'; }
+  else document.getElementById('asCount').textContent='You have '+pendingCount()+' trips pending confirmation';
 
   var el=document.getElementById('contractList');
   if(rows.length===0){ el.innerHTML='<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted);">'+(CONTRACTS.length?'No contracts match these filters.':'No transferred trips are available for your account yet.')+'</div>'; return; }
@@ -654,12 +659,12 @@ function renderContracts(){
     var overW=over>0?Math.round(over/slab*100*0.80):0;
     return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
       '<div class="cc-l"><div class="cc-badge"><div class="ccb-sz">'+c.size+'</div><div class="ccb-u">'+c.hours+'</div></div>'+
-      '<div class="cc-info"><div class="cc-name">'+c.cluster+' · '+c.size+' · '+nveh+' Vehicles · '+c.hours+'</div>'+
+      '<div class="cc-info"><div class="cc-name">'+((IS_ADMIN&&c.vendor)?(c.vendor+' · '):'')+c.cluster+' · '+c.size+' · '+nveh+' Vehicles · '+c.hours+'</div>'+
       '<div class="cc-meta"><span>Cluster: <b>'+c.cluster+'</b></span><span>Vehicle Size: <b>'+c.size+'</b></span><span>Vehicles: <b>'+nveh+'</b></span><span>Hours: <b>'+c.hours+'</b></span><span>Duration: <b>'+c.duration+'</b></span></div>'+
       '<div class="cc-id">'+c.id+'</div></div></div>'+
       '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+c.regKm.toLocaleString('en-IN')+'</b> / '+slab.toLocaleString('en-IN')+' km</span>'+(over?'<span style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' extra</span>':'')+'</div>'+
       '<div class="prog-track"><div class="prog-fill" style="width:'+baseW+'%"></div>'+(overW?'<div class="prog-over" style="width:'+overW+'%"></div>':'')+'</div>'+
-      '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Actual KM as of last completed trip · '+c.lastTrip+'</div></div>'+
+      '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Actual KM as of last completed trip · '+c.lastTrip+'</div>'+(IS_ADMIN?sizingBadge(c):'')+'</div>'+
       '<div class="cc-arrow">›</div></div></div>';
   }).join('');
 }
@@ -732,12 +737,15 @@ function renderVehicles(){
   var rows=list.filter(function(v){ return f==='all'||v.tag===f; });
   document.getElementById('vehBody').innerHTML=rows.map(function(v){
     var tagBadge=v.tag==='default'?'<span class="badge b-default">Default</span>':'<span class="badge b-repl">Replacement</span>';
+    var vkm=(IS_ADMIN&&v.effectiveKm!=null)?v.effectiveKm:v.km;
+    var foldNote=(IS_ADMIN&&v.replFolded>0)?'<div style="font-size:9px;color:var(--violet);margin-top:1px;">incl '+v.replFolded+' repl trip'+(v.replFolded>1?'s':'')+' KM</div>':'';
+    var projPill=(IS_ADMIN&&v.sizing)?' '+sizingPill(v.sizing,v.projPct):'';
     return '<tr class="vrow" onclick="openVehicleTrips(\''+v.name+'\')">'+
       '<td><div class="vname-cell"><div class="vdot '+(v.tag==='repl'?'repl':'')+'">'+v.name+'</div>'+
       '<div><div style="font-weight:600">'+v.name+' <span style="font-size:10px;color:var(--muted);font-weight:400;">· '+v.size+'</span></div>'+
       '<div style="font-size:10px;color:var(--muted)">'+v.no+'</div></div></div></td>'+
-      '<td>'+tagBadge+'</td>'+
-      '<td class="km-cell"><b>'+v.km.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span></td>'+
+      '<td>'+tagBadge+projPill+'</td>'+
+      '<td class="km-cell"><b>'+vkm.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span>'+foldNote+'</td>'+
       '<td>'+v.regTrips+'</td><td>'+v.adhocTrips+'</td><td>'+v.total+'</td>'+
       '<td style="color:var(--blue);font-size:16px;">›</td></tr>';
   }).join('');
@@ -757,6 +765,7 @@ var subState={};
 function renderMISInto(panelId, cid){
   var panel=document.getElementById(panelId);
   if(!subState[panelId]) subState[panelId]='all';
+  var _ro=IS_ADMIN;
 
   var prevBill=panel.querySelector('#f_bill'), prevRto=panel.querySelector('#f_rto'),
       prevVeh=panel.querySelector('#f_veh'), prevCon=panel.querySelector('#f_contract');
@@ -780,9 +789,9 @@ function renderMISInto(panelId, cid){
       '<div class="filt"><span class="fl-lbl">Show:</span><select id="f_rto" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All trips</option><option value="km">KM-bearing only</option><option value="rto">RTO-only (0 KM)</option></select></div>'+
     '</div>'+
     '<table class="ttable"><thead><tr>'+
-      '<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th><th>Trip Info</th>'+(cid?'':'<th>Contract ID</th>')+'<th>Actual Route</th><th>Billing</th><th>Replacement Tag</th><th>Completed</th><th>KMs / Amount</th><th>Status</th><th>Action</th>'+
+      (_ro?'':'<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th>')+'<th>Trip Info</th>'+(cid?'':'<th>Contract ID</th>')+'<th>Actual Route</th><th>Billing</th><th>Replacement Tag</th><th>Completed</th><th>KMs / Amount</th><th>Status</th>'+(_ro?'':'<th>Action</th>')+
     '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table>'+
-    '<div class="bulkbar" id="bulk_'+panelId+'" style="display:none;"><span id="bulkCount_'+panelId+'">0 trips selected</span> <button class="btn btn-primary" onclick="bulkConfirm(\''+panelId+'\')">Confirm Selected</button></div>';
+    (_ro?'':'<div class="bulkbar" id="bulk_'+panelId+'" style="display:none;"><span id="bulkCount_'+panelId+'">0 trips selected</span> <button class="btn btn-primary" onclick="bulkConfirm(\''+panelId+'\')">Confirm Selected</button></div>');
 
   var billSel=panel.querySelector('#f_bill'), rtoSel=panel.querySelector('#f_rto'),
       vehSel=panel.querySelector('#f_veh'), conSel=panel.querySelector('#f_contract');
@@ -814,7 +823,7 @@ function renderMISInto(panelId, cid){
   if(rto==='rto') rows=rows.filter(function(t){return t.rto;});
 
   var tb=panel.querySelector('#tb_'+panelId);
-  var colspan=(cid?9:10);
+  var colspan=(cid?9:10); if(_ro) colspan-=2;
   if(rows.length===0){ tb.innerHTML='<tr><td colspan="'+colspan+'" style="text-align:center;color:var(--muted);padding:26px;">No trips match these filters.</td></tr>'; return; }
 
   tb.innerHTML=rows.map(function(t){
@@ -833,9 +842,9 @@ function renderMISInto(panelId, cid){
     else if(t.status==='reconfirm') statusCell='<div style="color:var(--amber);font-weight:700;">↻ Pending Reconfirmation</div><div class="st-win">review the correction</div>';
     else statusCell='<div class="st-pending">Pending Confirmation</div><div class="st-win">Dispute open till '+(t.win||'—')+'</div>';
     if((t.status==='disputed'||t.status==='reconfirm') && t.disp) statusCell+='<div class="st-win" style="margin-top:3px;"><a href="#" onclick="viewDispute(\''+t.cid+'\',\''+t.id+'\');return false;" style="color:var(--blue);font-weight:600;text-decoration:underline;">View dispute</a></div>';
-    var checkCell = t.status==='pending'
+    var checkCell = _ro ? '' : (t.status==='pending'
       ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
-      : '<td></td>';
+      : '<td></td>');
     var actionCell;
     if(t.status==='pending') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Confirm</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Raise Dispute</button>';
     else if(t.status==='reconfirm') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Accept</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Re-dispute</button>';
@@ -846,9 +855,9 @@ function renderMISInto(panelId, cid){
       cidCol+
       '<td>'+routeHtml(t.route)+'</td><td>'+billBadge+'</td><td>'+replCol+'</td>'+
       '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td>'+statusCell+'</td>'+
-      '<td>'+actionCell+'</td></tr>';
+      (_ro?'':'<td>'+actionCell+'</td>')+'</tr>';
   }).join('');
-  updateBulk(panelId);
+  if(!_ro) updateBulk(panelId);
 }
 function setSub(panelId,s){ subState[panelId]=s; renderMISInto(panelId, panelId==='misPanel'?null:misContractId); }
 
@@ -1075,56 +1084,16 @@ async function submitDispute(){
 /* ══════════════ ADMIN VIEW (read-only utilization) ══════════════ */
 var ADMIN_DATA=null;
 function renderAdmin(d){
-  ADMIN_DATA=d;
-  var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent='Admin';
+  IS_ADMIN=true; ADMIN_DATA=d;
+  document.getElementById('loginScreen').style.display='none';
+  document.getElementById('appScreen').style.display='block';
+  CONTRACTS=d.contracts||[]; VEHICLES=d.vehicles||{}; TRIPS=d.trips||{};
+  setHeader(d.vendor||{name:'All Vendors - Sizing View'});
+  var t=document.querySelector('.vh-title'); if(t) t.textContent='All-Vendor Contract Sizing (read-only)';
+  var sub=document.querySelector('.vh-sub'); if(sub) sub.innerHTML='Ground view \u00b7 '+((d.contracts||[]).length)+' contracts across all vendors \u00b7 generated '+(d.generated_at||'');
+  var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent='Admin \u00b7 Ground';
   var av=document.querySelector('.topbar .tb-avatar'); if(av) av.textContent='A';
-  var content=document.querySelector('.content'); if(!content) return;
-  content.style.opacity='1';
-  var s=d.summary||{};
-  var clusters=Array.from(new Set((d.contracts||[]).map(function(c){return c.cluster;}).filter(Boolean))).sort();
-  content.innerHTML=
-    '<div class="vhead"><div><div class="vh-title">All-Vendor KM Utilization</div>'
-    +'<div class="vh-sub">Read-only admin view &nbsp;·&nbsp; generated '+(d.generated_at||'')+'</div></div>'
-    +'<div class="vh-stats">'
-    +'<div class="vh-stat"><div class="vs-num">'+(s.total||0)+'</div><div class="vs-lbl">Contracts</div></div>'
-    +'<div class="vh-stat"><div class="vs-num" style="color:var(--red)">'+(s.over||0)+'</div><div class="vs-lbl">Over-utilised</div></div>'
-    +'<div class="vh-stat"><div class="vs-num" style="color:var(--amber)">'+(s.under||0)+'</div><div class="vs-lbl">Under-utilised</div></div>'
-    +'<div class="vh-stat"><div class="vs-num" style="color:var(--green)">'+(s.onTrack||0)+'</div><div class="vs-lbl">On track</div></div>'
-    +'</div></div>'
-    +'<div class="filters">'
-    +'<div class="filt filt-search">🔍 <input id="adm_q" oninput="renderAdminTable()" placeholder="Search vendor / contract / cluster…"/></div>'
-    +'<div class="filt"><span class="fl-lbl">Cluster:</span><select id="adm_cluster" onchange="renderAdminTable()"><option value="all">All</option>'+clusters.map(function(c){return '<option>'+c+'</option>';}).join('')+'</select></div>'
-    +'<div class="filt"><span class="fl-lbl">Status:</span><select id="adm_status" onchange="renderAdminTable()"><option value="all">All</option><option>OVER</option><option>UNDER</option><option>ON-TRACK</option></select></div>'
-    +'<button class="download-btn" onclick="downloadAdminCSV()">⬇ Download</button></div>'
-    +'<table class="ttable" id="adm_table"><thead><tr><th>Vendor</th><th>Contract</th><th>Cluster</th><th>Size</th><th>KM Slab</th><th>Actual</th><th>Expected to date</th><th>Projected</th><th>Util %</th><th>Proj %</th><th>Status</th></tr></thead><tbody id="adm_tb"></tbody></table>';
-  renderAdminTable();
-}
-function renderAdminTable(){
-  if(!ADMIN_DATA) return;
-  var q=(document.getElementById('adm_q').value||'').toLowerCase();
-  var fc=document.getElementById('adm_cluster').value, fs=document.getElementById('adm_status').value;
-  var order={'OVER':0,'ON-TRACK':1,'UNDER':2};
-  var rows=(ADMIN_DATA.contracts||[]).filter(function(c){
-    if(fc!=='all'&&c.cluster!==fc) return false;
-    if(fs!=='all'&&c.status!==fs) return false;
-    if(q&&!((c.vendor_name+' '+c.contract_id+' '+c.cluster).toLowerCase().indexOf(q)>-1)) return false;
-    return true;
-  }).sort(function(a,b){ return (order[a.status]-order[b.status])||(b.projPct-a.projPct); });
-  var badge=function(st){ var col=st==='OVER'?'b-adhoc':(st==='UNDER'?'b-rto':'b-regular'); return '<span class="badge '+col+'">'+st+'</span>'; };
-  var tb=document.getElementById('adm_tb');
-  if(!rows.length){ tb.innerHTML='<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:26px;">No contracts match.</td></tr>'; return; }
-  tb.innerHTML=rows.map(function(c){
-    return '<tr>'
-      +'<td><div style="font-weight:600;">'+c.vendor_name+'</div><div style="font-size:10px;color:var(--muted)">'+c.vendor_oracle_id+'</div></td>'
-      +'<td style="font-size:10.5px;">'+c.contract_id+'</td>'
-      +'<td>'+c.cluster+'</td><td>'+c.size+'</td>'
-      +'<td>'+Number(c.slab).toLocaleString('en-IN')+'</td>'
-      +'<td><b>'+Number(c.actual).toLocaleString('en-IN')+'</b></td>'
-      +'<td style="color:var(--muted)">'+Number(c.expected).toLocaleString('en-IN')+'</td>'
-      +'<td><b>'+Number(c.projected).toLocaleString('en-IN')+'</b></td>'
-      +'<td>'+c.utilPct+'%</td><td>'+c.projPct+'%</td>'
-      +'<td>'+badge(c.status)+'</td></tr>';
-  }).join('');
+  showL1();
 }
 function downloadAdminCSV(){
   if(!ADMIN_DATA) return;
