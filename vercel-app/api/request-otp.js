@@ -28,7 +28,7 @@ module.exports = async (req, res) => {
     if (!accRaw) return res.json({ ok: false, error: 'This email is not registered for the transporter portal. Please contact your VALMO ops SPOC.' });
     const acc = JSON.parse(accRaw);
     if (acc.active === false) return res.json({ ok: false, error: 'This account is disabled. Please contact your VALMO ops SPOC.' });
-    if ((acc.role || 'vendor') !== 'vendor') return res.json({ ok: false, error: 'This portal is for transporters only.' });
+    if (['vendor', 'admin'].indexOf(acc.role || 'vendor') === -1) return res.json({ ok: false, error: 'This portal is for transporters/admins only.' });
 
     if (await rget('otpcd:' + e)) return res.json({ ok: false, error: 'A code was just sent. Please wait a few seconds and check your inbox/spam.' });
 

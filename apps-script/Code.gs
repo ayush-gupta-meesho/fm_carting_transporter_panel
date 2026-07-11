@@ -341,7 +341,7 @@ function _buildVendorPayload(oracle) {
         km:        isAdhoc ? null : (rto ? 0 : km),
         amt:       isAdhoc ? _num(t.adhoc_amount) : null,
         rto:       rto ? true : undefined,
-        status:    _low(t.vendor_status) === 'confirmed' ? 'confirmed' : 'pending',
+        status:    (function(v){ return v==='confirmed'||v==='reconfirmed' ? 'confirmed' : (v==='disputed' ? 'disputed' : (v==='reconfirm' ? 'reconfirm' : 'pending')); })(_low(t.vendor_status)),
         win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end)
       };
     });
@@ -493,6 +493,11 @@ function _writeRows(tabName, rows) {
 }
 
 /** Menu for convenience when the Sheet is open. */
+/** Menu wrapper: stop the automatic sync trigger and confirm. */
+function stopSyncFromMenu() {
+  SpreadsheetApp.getUi().alert(stopSyncTrigger());
+}
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('VALMO Panel')
@@ -501,6 +506,10 @@ function onOpen() {
     .addSeparator()
     .addItem('3 · Sync to Upstash NOW', 'syncNowFromMenu')
     .addItem('4 · Create / reset 10-min sync trigger', 'createSyncTrigger')
+    .addItem('5 · Stop auto-sync', 'stopSyncFromMenu')
+    .addSeparator()
+    .addItem('6 · Apply vendor actions (drain + sync)', 'drainAndSyncFromMenu')
+    .addItem('7 · Import resolved disputes (CSV)', 'importResolvedDisputes')
     .addToUi();
 }
 
@@ -513,4 +522,56 @@ function syncNowFromMenu() {
     SpreadsheetApp.getUi().alert('Sync failed\n\n' + e.message +
       '\n\nCheck that UPSTASH_URL and UPSTASH_TOKEN are set in Project Settings → Script properties.');
   }
+}
+
+/* ==================================================================================================
+ * ADMIN — all-vendors KM utilization payload (read-only). Written to Upstash key admin:all by Sync.
+ * Utilization vs contract KM slab, projected to period end:
+ *   expected_to_date = slab × elapsed/total ;  projected = actual × total/elapsed
+ *   status: OVER (projected > slab), UNDER (projected < 90% slab), else ON-TRACK.
+ * ================================================================================================*/
+function _buildAdminPayload() {
+  var ci = _readTab(TABS.contractInfo, 'contract_id');
+  var cv = _readTab(TABS.contractVehicles, 'contract_id');
+  var tl = _readTab(TABS.tripLevel, 'trip_id');
+
+  var slabBy = {};
+  cv.forEach(function (v) { var cid = _s(v.contract_id); slabBy[cid] = (slabBy[cid] || 0) + _num(v.pegged_km_slab); });
+
+  var actualBy = {};
+  tl.forEach(function (t) {
+    var cid = _s(t.contract_id);
+    var billing = _low(t.billing_type_final) || _low(t.billing_type_system);
+    var rto = _low(t.challan_type) === 'rto';
+    if (billing !== 'adhoc' && !rto) actualBy[cid] = (actualBy[cid] || 0) + _num(t.total_trip_km);
+  });
+
+  var now = new Date(), out = [], over = 0, under = 0, onTrack = 0, totSlab = 0, totActual = 0;
+  ci.forEach(function (c) {
+    var cid = _s(c.contract_id);
+    var slab = slabBy[cid] || _num(c.total_km_slab) || 0;
+    var actual = Math.round(actualBy[cid] || 0);
+    var start = _toDate(c.contract_start_date), end = _toDate(c.contract_end_date);
+    var totalDays = (start && end) ? Math.max(1, (end - start) / 86400000) : 30;
+    var elapsed = start ? Math.min(Math.max((now - start) / 86400000, 0), totalDays) : totalDays;
+    var expected = slab * (elapsed / totalDays);
+    var projected = elapsed > 0 ? Math.round(actual * (totalDays / elapsed)) : actual;
+    var status = projected > slab * 1.02 ? 'OVER' : (projected < slab * 0.90 ? 'UNDER' : 'ON-TRACK');
+    if (status === 'OVER') over++; else if (status === 'UNDER') under++; else onTrack++;
+    totSlab += slab; totActual += actual;
+    out.push({
+      contract_id: cid, vendor_oracle_id: _s(c.vendor_oracle_id), vendor_name: _s(c.vendor_name),
+      cluster: _s(c.cluster), size: _s(c.vehicle_size), hours: _s(c.hours_slab),
+      slab: slab, actual: actual, expected: Math.round(expected), projected: projected,
+      utilPct: slab > 0 ? Math.round(actual / slab * 100) : 0,
+      projPct: slab > 0 ? Math.round(projected / slab * 100) : 0,
+      overRate: _num(c.ex_km_rate), duration: _fmtRange(c.contract_start_date, c.contract_end_date), status: status
+    });
+  });
+  return {
+    admin: true,
+    generated_at: Utilities.formatDate(now, _tz(), 'd MMM yyyy, HH:mm'),
+    summary: { total: out.length, over: over, under: under, onTrack: onTrack, totalSlab: totSlab, totalActual: totActual },
+    contracts: out
+  };
 }

@@ -28,6 +28,7 @@ async function redis(cmd) {
 const rget   = (k) => redis(['GET', k]);
 const rsetex = (k, ttl, v) => redis(['SET', k, v, 'EX', String(ttl)]);
 const rdel   = (k) => redis(['DEL', k]);
+const rpush  = (k, v) => redis(['RPUSH', k, v]);   // append action to a queue list
 
 /* ---------------- JWT (HS256) ---------------- */
 function b64url(buf) {
@@ -88,7 +89,7 @@ async function readBody(req) {
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || '').trim().toLowerCase());
 
 module.exports = {
-  rget, rsetex, rdel, redis,
+  rget, rsetex, rdel, rpush, redis,
   signJwt, verifyJwt, sessionFromReq, sessionCookie, clearCookie,
   parseCookies, readBody, validEmail, SESSION_TTL,
 };

@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VALMO Transporter Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
   --navy:#123A6B; --navy-deep:#0E2E56; --cyan:#4FC3E8; --blue:#1F8FD0;
@@ -442,6 +443,27 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 
 
 </div>
+<!-- ══ DISPUTE MODAL (V2) ══ -->
+<div class="modal-overlay" id="disputeModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mh-title">Raise Dispute — <span id="dispTripId"></span></div>
+      <button class="mh-close" onclick="closeDispute()">×</button>
+    </div>
+    <div class="modal-body">
+      <div><div class="disp-cat-title">Select all issues that apply</div><div class="disp-cats" id="dispCats"></div></div>
+      <div class="disp-detail" id="dispDetails"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="upload-note">📎 Proof is required — clear documents help resolve faster.</div>
+      <div class="foot-btns">
+        <button class="btn btn-ghost" onclick="closeDispute()">Cancel</button>
+        <button class="btn btn-primary" id="dispSubmitBtn" onclick="submitDispute()">Submit Dispute</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ══════════════════════════════════════════════════════════════════════════
  *  CLIENT  —  data is fetched from the Vercel API (/api/*) over fetch(); cookie session.
@@ -461,7 +483,7 @@ var money = function(n){ return '₹' + Number(n||0).toLocaleString('en-IN'); };
 function contractById(id){ return CONTRACTS.find(function(c){return c.id===id;}); }
 function vehNoOf(cid, vname){ var v=(VEHICLES[cid]||[]).find(function(x){return x.name===vname;}); return v?v.no:vname; }
 function allTrips(){ var a=[]; CONTRACTS.forEach(function(c){ (TRIPS[c.id]||[]).forEach(function(t){ a.push(Object.assign({},t,{cid:c.id})); }); }); return a; }
-function pendingCount(){ return allTrips().filter(function(t){return t.status==='pending';}).length; }
+function pendingCount(){ return allTrips().filter(function(t){return t.status==='pending'||t.status==='reconfirm';}).length; }
 
 /* ══════════════ AUTH ══════════════ */
 function _msg(text, cls){ var m=document.getElementById('loginMsg'); m.textContent=text||''; m.className='login-msg'+(cls?(' '+cls):''); }
@@ -530,6 +552,7 @@ async function loadPanel(){
     var r=await res.json();
     if(!r||!r.ok){ alert('Could not load data: '+((r&&r.error)||'unknown')); return; }
     var d=r.data;
+    if(d.admin){ renderAdmin(d); return; }
     CONTRACTS=d.contracts||[]; VEHICLES=d.vehicles||{}; TRIPS=d.trips||{};
     setHeader(d.vendor||{});
     showL1();
@@ -744,8 +767,9 @@ function renderMISInto(panelId, cid){
       '<div class="filt"><span class="fl-lbl">Show:</span><select id="f_rto" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All trips</option><option value="km">KM-bearing only</option><option value="rto">RTO-only (0 KM)</option></select></div>'+
     '</div>'+
     '<table class="ttable"><thead><tr>'+
-      '<th>Trip Info</th>'+(cid?'':'<th>Contract ID</th>')+'<th>Actual Route</th><th>Billing</th><th>Replacement Tag</th><th>Completed</th><th>KMs / Amount</th><th>Status</th>'+
-    '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table>';
+      '<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th><th>Trip Info</th>'+(cid?'':'<th>Contract ID</th>')+'<th>Actual Route</th><th>Billing</th><th>Replacement Tag</th><th>Completed</th><th>KMs / Amount</th><th>Status</th><th>Action</th>'+
+    '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table>'+
+    '<div class="bulkbar" id="bulk_'+panelId+'" style="display:none;"><span id="bulkCount_'+panelId+'">0 trips selected</span> <button class="btn btn-primary" onclick="bulkConfirm(\''+panelId+'\')">Confirm Selected</button></div>';
 
   var billSel=panel.querySelector('#f_bill'), rtoSel=panel.querySelector('#f_rto'),
       vehSel=panel.querySelector('#f_veh'), conSel=panel.querySelector('#f_contract');
@@ -762,11 +786,11 @@ function renderMISInto(panelId, cid){
   var sub=subState[panelId];
 
   panel.querySelector('#c_all_'+panelId).textContent='('+src.length+')';
-  panel.querySelector('#c_pending_'+panelId).textContent='('+src.filter(function(t){return t.status==='pending';}).length+')';
+  panel.querySelector('#c_pending_'+panelId).textContent='('+src.filter(function(t){return t.status==='pending'||t.status==='reconfirm';}).length+')';
   panel.querySelector('#c_confirmed_'+panelId).textContent='('+src.filter(function(t){return t.status==='confirmed';}).length+')';
 
   var rows=src.slice();
-  if(sub==='pending') rows=rows.filter(function(t){return t.status==='pending';});
+  if(sub==='pending') rows=rows.filter(function(t){return t.status==='pending'||t.status==='reconfirm';});
   if(sub==='confirmed') rows=rows.filter(function(t){return t.status==='confirmed';});
   if(bill!=='all') rows=rows.filter(function(t){return t.billing===bill;});
   if(veh!=='all') rows=rows.filter(function(t){return t.veh===veh||t.replFor===veh;});
@@ -775,7 +799,7 @@ function renderMISInto(panelId, cid){
   if(rto==='rto') rows=rows.filter(function(t){return t.rto;});
 
   var tb=panel.querySelector('#tb_'+panelId);
-  var colspan=(cid?7:8);
+  var colspan=(cid?9:10);
   if(rows.length===0){ tb.innerHTML='<tr><td colspan="'+colspan+'" style="text-align:center;color:var(--muted);padding:26px;">No trips match these filters.</td></tr>'; return; }
 
   tb.innerHTML=rows.map(function(t){
@@ -788,16 +812,27 @@ function renderMISInto(panelId, cid){
     if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not accumulated</div>';
     else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span><div style="font-size:9.5px;color:var(--muted);">adhoc amount</div>';
     else kmCell='<span class="km-cell"><b>'+t.km+'</b> km</span>';
-    var statusCell = t.status==='pending'
-      ? '<div class="st-pending">Pending Confirmation</div><div class="st-win">Dispute open till '+(t.win||'—')+'</div>'
-      : '<div class="st-confirmed">✓ Confirmed</div>';
+    var statusCell;
+    if(t.status==='confirmed') statusCell='<div class="st-confirmed">✓ Confirmed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'');
+    else if(t.status==='disputed') statusCell='<div style="color:var(--violet);font-weight:700;">⚑ Disputed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'<div class="st-win">under review</div>');
+    else if(t.status==='reconfirm') statusCell='<div style="color:var(--amber);font-weight:700;">↻ Pending Reconfirmation</div><div class="st-win">review the correction</div>';
+    else statusCell='<div class="st-pending">Pending Confirmation</div><div class="st-win">Dispute open till '+(t.win||'—')+'</div>';
+    var checkCell = t.status==='pending'
+      ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
+      : '<td></td>';
+    var actionCell;
+    if(t.status==='pending') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Confirm</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Raise Dispute</button>';
+    else if(t.status==='reconfirm') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Accept</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Re-dispute</button>';
+    else actionCell='<span style="color:var(--muted);font-size:11px;">'+(t._pending?'saving…':'no action')+'</span>';
     var cidCol=cid?'':'<td><span class="cid-pill">'+t.cid+'</span></td>';
-    return '<tr>'+
+    return '<tr>'+checkCell+
       '<td><div style="font-weight:600;font-size:11.5px;">'+t.id+'</div><div style="font-size:10px;color:var(--muted);margin-top:2px;">'+t.size+' · '+t.vehNo+'</div></td>'+
       cidCol+
       '<td>'+routeHtml(t.route)+'</td><td>'+billBadge+'</td><td>'+replCol+'</td>'+
-      '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td>'+statusCell+'</td></tr>';
+      '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td>'+statusCell+'</td>'+
+      '<td>'+actionCell+'</td></tr>';
   }).join('');
+  updateBulk(panelId);
 }
 function setSub(panelId,s){ subState[panelId]=s; renderMISInto(panelId, panelId==='misPanel'?null:misContractId); }
 
@@ -829,17 +864,215 @@ function downloadCSV(){
   var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a'); a.href=url; a.download='VALMO_trips_export.csv';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+/* ══════════════ WRITE ACTIONS (V2: confirm / dispute) ══════════════ */
+var CONFIG={proofMode:'blob',disputeFormAdhoc:'',disputeFormRegular:''};
+var DISPUTE_CATS=[{key:'billing',label:'Wrong billing type'},{key:'value',label:'Wrong KM / Amount'},{key:'rfq',label:'Contract / RFQ ID mismatch or missing'}];
+var disputeTrip=null;
+
+function toast(msg){ var d=document.createElement('div'); d.textContent=msg;
+  d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 18px;border-radius:8px;font-size:12.5px;z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,.25);';
+  document.body.appendChild(d); setTimeout(function(){ d.remove(); },3400); }
+
+function postAction(body){
+  return fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(x){return x.json();}).catch(function(){return {ok:false,error:'Network error.'};});
+}
+function _findTrip(cid,id){ return (TRIPS[cid]||[]).find(function(x){return x.id===id;}); }
+function rerenderMIS(){
+  if(document.getElementById('view-mis').classList.contains('active')) renderMISInto('misPanel',null);
+  if(document.getElementById('view-l2').classList.contains('active')) renderMISInto('tripPanelContract', currentContract?currentContract.id:null);
+  var el=document.getElementById('asCount'); if(el) el.textContent='You have '+pendingCount()+' trips pending confirmation';
+}
+
+async function confirmTrip(cid,id){
+  var r=await postAction({type:'confirm',trip_id:id});
+  if(r&&r.ok){ var t=_findTrip(cid,id); if(t){t.status='confirmed';t._pending=true;} rerenderMIS(); toast('Confirmed — applies on the next sync.'); }
+  else alert((r&&r.error)||'Could not confirm.');
+}
+async function bulkConfirm(panelId){
+  var sel=[].slice.call(document.querySelectorAll('.rowchk_'+panelId)).filter(function(c){return c.checked;});
+  if(!sel.length) return;
+  var ids=sel.map(function(c){return c.dataset.tid;});
+  var r=await postAction({type:'confirm',trip_ids:ids});
+  if(r&&r.ok){ (r.trip_ids||ids).forEach(function(id){ Object.keys(TRIPS).forEach(function(cid){ var t=_findTrip(cid,id); if(t){t.status='confirmed';t._pending=true;} }); });
+    rerenderMIS(); toast(r.queued+' trip(s) confirmed — apply on the next sync.'); }
+  else alert((r&&r.error)||'Could not confirm.');
+}
+function toggleSelectAll(panelId){ var m=document.getElementById('selAll_'+panelId); if(!m) return;
+  document.querySelectorAll('.rowchk_'+panelId).forEach(function(cb){ cb.checked=m.checked; }); updateBulk(panelId); }
+function updateBulk(panelId){ var checks=[].slice.call(document.querySelectorAll('.rowchk_'+panelId)); var sel=checks.filter(function(c){return c.checked;});
+  var bar=document.getElementById('bulk_'+panelId); if(!bar) return;
+  if(sel.length){ bar.style.display='flex'; document.getElementById('bulkCount_'+panelId).textContent=sel.length+' trip'+(sel.length>1?'s':'')+' selected'; }
+  else bar.style.display='none';
+  var m=document.getElementById('selAll_'+panelId); if(m) m.checked=checks.length>0 && sel.length===checks.length; }
+
+/* ---- dispute modal ---- */
+function openDispute(cid,id){
+  disputeTrip=_findTrip(cid,id); if(!disputeTrip) return; disputeTrip.cid=cid;
+  document.getElementById('dispTripId').textContent=id+'  ·  '+cid;
+  document.getElementById('dispCats').innerHTML=DISPUTE_CATS.map(function(c){
+    return '<label class="disp-check" id="chk-'+c.key+'"><input type="checkbox" onchange="toggleCat(\''+c.key+'\')"/> '+c.label+'</label>'; }).join('');
+  document.getElementById('dispDetails').innerHTML=
+    DISPUTE_CATS.map(function(c){ return '<div class="disp-panel" id="panel-'+c.key+'">'+catPanelHtml(c.key,disputeTrip,cid)+'</div>'; }).join('')
+    + proofPanelHtml(cid);
+  var b=document.getElementById('dispSubmitBtn'); b.disabled=false; b.textContent='Submit Dispute';
+  document.getElementById('disputeModal').classList.add('open');
+}
+function toggleCat(key){ var chk=document.querySelector('#chk-'+key+' input');
+  document.getElementById('chk-'+key).classList.toggle('checked',chk.checked);
+  document.getElementById('panel-'+key).classList.toggle('show',chk.checked); }
+function closeDispute(){ document.getElementById('disputeModal').classList.remove('open'); disputeTrip=null; }
+
+function catPanelHtml(key,trip,cid){
+  var defs=(VEHICLES[cid]||[]).filter(function(v){return v.tag==='default';});
+  var vehOpts=defs.map(function(v){return '<option value="'+v.name+'">'+v.no+' ('+v.name+')</option>';}).join('');
+  if(key==='billing'){
+    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong billing type — marked Adhoc, should be Regular</div>'
+      +'<div class="dp-row"><div class="dp-field"><label>Current</label><input readonly value="Adhoc"/></div><div class="dp-field"><label>Correct</label><input readonly value="Regular"/></div></div>'
+      +'<div class="dp-row" style="margin-top:10px;"><div class="dp-field"><label>Aggregate these KMs against which default vehicle?</label><select id="dsp_aggveh"><option value="">Select default vehicle…</option>'+vehOpts+'</select></div></div>';
+    return '<div class="dp-title">Wrong billing type — marked Regular, should be Adhoc</div><div class="dp-row"><div class="dp-field"><label>Current</label><input readonly value="Regular"/></div><div class="dp-field"><label>Correct</label><input readonly value="Adhoc"/></div></div>';
+  }
+  if(key==='value'){
+    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong Amount</div><div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="₹'+trip.amt+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>';
+    return '<div class="dp-title">Wrong KM</div><div class="dp-row"><div class="dp-field"><label>Current KM</label><input readonly value="'+(trip.rto?'0 km (RTO)':(trip.km+' km'))+'"/></div><div class="dp-field"><label>Correct KM</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct KM"/></div></div>';
+  }
+  if(key==='rfq') return '<div class="dp-title">Contract / RFQ ID mismatch or missing</div><div class="dp-row"><div class="dp-field"><label>Current Contract ID</label><input readonly value="'+cid+'"/></div><div class="dp-field"><label>Correct Contract ID</label><input id="dsp_contract" placeholder="Enter correct ID"/></div></div>';
+  return '';
+}
+function proofPanelHtml(cid){
+  var proofField = (CONFIG.proofMode==='form')
+    ? '<a class="btn btn-primary" id="dsp_formlink" target="_blank" rel="noopener" href="'+disputeFormUrl(cid)+'">Open proof form ↗</a><div style="font-size:10.5px;color:var(--muted);margin-top:6px;">Upload your proof on the form, then submit here.</div>'
+    : '<input type="file" id="dsp_proof" accept="image/*,application/pdf" style="font-size:12px;"/><div style="font-size:10.5px;color:var(--muted);margin-top:4px;">Challan, GPS trace, photo or PDF · max 4MB.</div>';
+  return '<div class="disp-panel show" style="border-style:dashed;"><div class="dp-title">Upload Proof <span style="color:var(--red)">*</span></div>'
+    + proofField
+    + '<div class="dp-field" style="margin-top:10px;"><label>Callback number</label><input id="dsp_callback" placeholder="+91 - mobile number"/></div>'
+    + '<div class="dp-field" style="margin-top:8px;"><label>Description</label><input id="dsp_desc" placeholder="Provide more details"/></div></div>';
+}
+function disputeFormUrl(cid){
+  var base = (disputeTrip && disputeTrip.billing==='Adhoc') ? CONFIG.disputeFormAdhoc : CONFIG.disputeFormRegular;
+  if(!base) return '#';
+  var sep = base.indexOf('?')>-1 ? '&' : '?';
+  return base + sep + 'trip_id=' + encodeURIComponent(disputeTrip?disputeTrip.id:'');
+}
+
+function uploadProof(file, tripId){
+  return new Promise(function(resolve){
+    var reader=new FileReader();
+    reader.onload=async function(){
+      var b64=String(reader.result).split(',')[1]||'';
+      try{
+        var r=await (await fetch('/api/upload-proof',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({filename:file.name,contentType:file.type,dataBase64:b64,trip_id:tripId})})).json();
+        if(r&&r.ok) resolve(r.url); else { alert((r&&r.error)||'Upload failed.'); resolve(''); }
+      }catch(e){ alert('Upload error.'); resolve(''); }
+    };
+    reader.onerror=function(){ alert('Could not read file.'); resolve(''); };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function submitDispute(){
+  if(!disputeTrip) return;
+  var cats=DISPUTE_CATS.filter(function(c){ var el=document.querySelector('#chk-'+c.key+' input'); return el&&el.checked; }).map(function(c){return c.key;});
+  if(!cats.length){ alert('Select at least one issue.'); return; }
+  var claim={};
+  if(cats.indexOf('billing')>-1){ claim.claim_billing_type = disputeTrip.billing==='Adhoc'?'Regular':'Adhoc'; var av=document.getElementById('dsp_aggveh'); if(av) claim.claim_aggregate_vehicle=av.value; }
+  if(cats.indexOf('value')>-1){ var vv=document.getElementById('dsp_value'); if(vv){ if(disputeTrip.billing==='Adhoc') claim.claim_amount=vv.value; else claim.claim_km=vv.value; } }
+  if(cats.indexOf('rfq')>-1){ var rv=document.getElementById('dsp_contract'); if(rv) claim.claim_contract_id=rv.value; }
+  var desc=(document.getElementById('dsp_desc')||{}).value||'';
+  var cb=(document.getElementById('dsp_callback')||{}).value||'';
+  var btn=document.getElementById('dispSubmitBtn'); btn.disabled=true; btn.textContent='Submitting…';
+  try{
+    var proofUrl='';
+    if(CONFIG.proofMode==='blob'){
+      var fi=document.getElementById('dsp_proof');
+      if(!fi||!fi.files||!fi.files.length){ alert('Please attach a proof file.'); btn.disabled=false; btn.textContent='Submit Dispute'; return; }
+      proofUrl=await uploadProof(fi.files[0], disputeTrip.id);
+      if(!proofUrl){ btn.disabled=false; btn.textContent='Submit Dispute'; return; }
+    }
+    var body=Object.assign({type:'dispute',trip_id:disputeTrip.id,categories:cats,vendor_description:desc,callback_number:cb,proof_url:proofUrl}, claim);
+    var r=await postAction(body);
+    if(r&&r.ok){ var t=_findTrip(disputeTrip.cid,disputeTrip.id); if(t){t.status='disputed';t._pending=true;} closeDispute(); rerenderMIS(); toast('Dispute submitted — finalizes on the next sync.'); }
+    else { alert((r&&r.error)||'Could not submit dispute.'); btn.disabled=false; btn.textContent='Submit Dispute'; }
+  }catch(e){ alert('Error: '+e.message); btn.disabled=false; btn.textContent='Submit Dispute'; }
+}
+
+/* ══════════════ ADMIN VIEW (read-only utilization) ══════════════ */
+var ADMIN_DATA=null;
+function renderAdmin(d){
+  ADMIN_DATA=d;
+  var tbName=document.querySelector('.topbar .tb-r span:not(.ro-pill)'); if(tbName) tbName.textContent='Admin';
+  var av=document.querySelector('.topbar .tb-avatar'); if(av) av.textContent='A';
+  var content=document.querySelector('.content'); if(!content) return;
+  content.style.opacity='1';
+  var s=d.summary||{};
+  var clusters=Array.from(new Set((d.contracts||[]).map(function(c){return c.cluster;}).filter(Boolean))).sort();
+  content.innerHTML=
+    '<div class="vhead"><div><div class="vh-title">All-Vendor KM Utilization</div>'
+    +'<div class="vh-sub">Read-only admin view &nbsp;·&nbsp; generated '+(d.generated_at||'')+'</div></div>'
+    +'<div class="vh-stats">'
+    +'<div class="vh-stat"><div class="vs-num">'+(s.total||0)+'</div><div class="vs-lbl">Contracts</div></div>'
+    +'<div class="vh-stat"><div class="vs-num" style="color:var(--red)">'+(s.over||0)+'</div><div class="vs-lbl">Over-utilised</div></div>'
+    +'<div class="vh-stat"><div class="vs-num" style="color:var(--amber)">'+(s.under||0)+'</div><div class="vs-lbl">Under-utilised</div></div>'
+    +'<div class="vh-stat"><div class="vs-num" style="color:var(--green)">'+(s.onTrack||0)+'</div><div class="vs-lbl">On track</div></div>'
+    +'</div></div>'
+    +'<div class="filters">'
+    +'<div class="filt filt-search">🔍 <input id="adm_q" oninput="renderAdminTable()" placeholder="Search vendor / contract / cluster…"/></div>'
+    +'<div class="filt"><span class="fl-lbl">Cluster:</span><select id="adm_cluster" onchange="renderAdminTable()"><option value="all">All</option>'+clusters.map(function(c){return '<option>'+c+'</option>';}).join('')+'</select></div>'
+    +'<div class="filt"><span class="fl-lbl">Status:</span><select id="adm_status" onchange="renderAdminTable()"><option value="all">All</option><option>OVER</option><option>UNDER</option><option>ON-TRACK</option></select></div>'
+    +'<button class="download-btn" onclick="downloadAdminCSV()">⬇ Download</button></div>'
+    +'<table class="ttable" id="adm_table"><thead><tr><th>Vendor</th><th>Contract</th><th>Cluster</th><th>Size</th><th>KM Slab</th><th>Actual</th><th>Expected to date</th><th>Projected</th><th>Util %</th><th>Proj %</th><th>Status</th></tr></thead><tbody id="adm_tb"></tbody></table>';
+  renderAdminTable();
+}
+function renderAdminTable(){
+  if(!ADMIN_DATA) return;
+  var q=(document.getElementById('adm_q').value||'').toLowerCase();
+  var fc=document.getElementById('adm_cluster').value, fs=document.getElementById('adm_status').value;
+  var order={'OVER':0,'ON-TRACK':1,'UNDER':2};
+  var rows=(ADMIN_DATA.contracts||[]).filter(function(c){
+    if(fc!=='all'&&c.cluster!==fc) return false;
+    if(fs!=='all'&&c.status!==fs) return false;
+    if(q&&!((c.vendor_name+' '+c.contract_id+' '+c.cluster).toLowerCase().indexOf(q)>-1)) return false;
+    return true;
+  }).sort(function(a,b){ return (order[a.status]-order[b.status])||(b.projPct-a.projPct); });
+  var badge=function(st){ var col=st==='OVER'?'b-adhoc':(st==='UNDER'?'b-rto':'b-regular'); return '<span class="badge '+col+'">'+st+'</span>'; };
+  var tb=document.getElementById('adm_tb');
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:26px;">No contracts match.</td></tr>'; return; }
+  tb.innerHTML=rows.map(function(c){
+    return '<tr>'
+      +'<td><div style="font-weight:600;">'+c.vendor_name+'</div><div style="font-size:10px;color:var(--muted)">'+c.vendor_oracle_id+'</div></td>'
+      +'<td style="font-size:10.5px;">'+c.contract_id+'</td>'
+      +'<td>'+c.cluster+'</td><td>'+c.size+'</td>'
+      +'<td>'+Number(c.slab).toLocaleString('en-IN')+'</td>'
+      +'<td><b>'+Number(c.actual).toLocaleString('en-IN')+'</b></td>'
+      +'<td style="color:var(--muted)">'+Number(c.expected).toLocaleString('en-IN')+'</td>'
+      +'<td><b>'+Number(c.projected).toLocaleString('en-IN')+'</b></td>'
+      +'<td>'+c.utilPct+'%</td><td>'+c.projPct+'%</td>'
+      +'<td>'+badge(c.status)+'</td></tr>';
+  }).join('');
+}
+function downloadAdminCSV(){
+  if(!ADMIN_DATA) return;
+  var H=['Vendor','Oracle','Contract ID','Cluster','Size','KM Slab','Actual KM','Expected to date','Projected','Util %','Proj %','Status'];
+  var rows=[H].concat((ADMIN_DATA.contracts||[]).map(function(c){return [c.vendor_name,c.vendor_oracle_id,c.contract_id,c.cluster,c.size,c.slab,c.actual,c.expected,c.projected,c.utilPct,c.projPct,c.status];}));
+  var csv=rows.map(function(r){return r.map(function(x){var s=String(x==null?'':x);return (s.indexOf(',')>-1||s.indexOf('"')>-1)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',');}).join('\n');
+  var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}); var url=URL.createObjectURL(blob);
+  var a=document.createElement('a'); a.href=url; a.download='VALMO_utilization.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
 /* ══════════════ INIT ══════════════ */
 document.addEventListener('DOMContentLoaded', async function(){
-  // If a valid session cookie exists, /api/data returns data; otherwise show login.
+  try{ var _cfg=await (await fetch('/api/config')).json(); if(_cfg&&_cfg.ok) CONFIG=_cfg; }catch(e){}
   try{
     var res=await fetch('/api/data', {headers:{'Accept':'application/json'}});
     if(res.ok){
       var r=await res.json();
       if(r&&r.ok){
+        if(r.data.admin){ renderAdmin(r.data); return; }
         CONTRACTS=r.data.contracts||[]; VEHICLES=r.data.vehicles||{}; TRIPS=r.data.trips||{};
         setHeader(r.data.vendor||{});
         document.getElementById('loginScreen').style.display='none';

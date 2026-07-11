@@ -6,6 +6,11 @@ module.exports = async (req, res) => {
   const s = sessionFromReq(req);
   if (!s) return res.status(401).json({ ok: false, error: 'SESSION_EXPIRED' });
   try {
+    // Admin: return the all-vendors utilization payload.
+    if (s.role === 'admin') {
+      const araw = await rget('admin:all');
+      return res.json({ ok: true, data: araw ? JSON.parse(araw) : { admin: true, contracts: [], summary: { total: 0 } } });
+    }
     // Scope is the oracle from the VERIFIED session token — never from client input (G6).
     const raw = await rget('vendor:' + s.oracle);
     if (!raw) {

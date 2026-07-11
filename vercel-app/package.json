@@ -5,6 +5,7 @@
   "description": "VALMO Transporter Panel — public (Vercel) frontend + API. Reads pre-scoped data from Upstash; Meesho SMTP for OTP.",
   "engines": { "node": ">=18" },
   "dependencies": {
-    "nodemailer": "^6.9.14"
+    "nodemailer": "^6.9.14",
+    "@vercel/blob": "^0.27.0"
   }
 }

@@ -25,7 +25,7 @@ module.exports = async (req, res) => {
     const accRaw = await rget('access:' + e);
     if (!accRaw) return res.json({ ok: false, error: 'Account no longer active.' });
     const acc = JSON.parse(accRaw);
-    if (acc.active === false || (acc.role || 'vendor') !== 'vendor') return res.json({ ok: false, error: 'Access not permitted.' });
+    if (acc.active === false || ['vendor', 'admin'].indexOf(acc.role || 'vendor') === -1) return res.json({ ok: false, error: 'Access not permitted.' });
 
     const token = signJwt({ email: e, oracle: acc.oracle, name: acc.name, role: acc.role || 'vendor' });
     res.setHeader('Set-Cookie', sessionCookie(token));

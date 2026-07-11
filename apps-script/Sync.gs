@@ -74,7 +74,14 @@ function syncToUpstash() {
     count++;
   });
 
-  var msg = 'Synced ' + ac.length + ' access rows + ' + count + ' vendor payloads at ' + new Date();
+  // admin all-vendors utilization payload (only if an active admin user exists)
+  var hasAdmin = ac.some(function (r) {
+    return _low(r.role) === 'admin' && !(r.active !== undefined && r.active !== '' && !_yes(r.active));
+  });
+  var adminNote = '';
+  if (hasAdmin) { _up(['SET', 'admin:all', JSON.stringify(_buildAdminPayload())]); adminNote = ' + admin:all'; }
+
+  var msg = 'Synced ' + ac.length + ' access rows + ' + count + ' vendor payloads' + adminNote + ' at ' + new Date();
   Logger.log(msg);
   return msg;
 }
@@ -97,4 +104,15 @@ function purgeUpstashVendors() {
     var o = _s(r.vendor_oracle_id); if (o) _up(['DEL', 'vendor:' + o]);
   });
   return 'Purged synced keys for ' + ac.length + ' access rows.';
+}
+
+/** Stop the automatic 10-min sync (deletes the trigger). Manual "Sync to Upstash NOW" still works. */
+function stopSyncTrigger() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'syncToUpstash') { ScriptApp.deleteTrigger(t); n++; }
+  });
+  return n > 0
+    ? 'Auto-sync stopped (' + n + ' trigger removed). Use "Sync to Upstash NOW" for manual pushes.'
+    : 'No auto-sync trigger was active.';
 }
