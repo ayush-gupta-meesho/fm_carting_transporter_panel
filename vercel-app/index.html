@@ -723,8 +723,15 @@ function showL2(id){
   document.getElementById('view-l1').classList.remove('active');
   document.getElementById('view-mis').classList.remove('active');
   document.getElementById('view-l2').classList.add('active');
-  showL2Tab('veh');
-  renderVehicles();
+  var _tabsBar=document.querySelector('#view-l2 .l2tabs');
+  if(c.isAdhocBucket){
+    if(_tabsBar) _tabsBar.style.display='none';   // adhoc-only: no per-vehicle KM view, trips are the whole story
+    showL2Tab('trip');
+  } else {
+    if(_tabsBar) _tabsBar.style.display='';
+    showL2Tab('veh');
+    renderVehicles();
+  }
   misMode='contract'; misContractId=c.id;
   renderMISInto('tripPanelContract', c.id);
   window.scrollTo({top:0,behavior:'smooth'});
