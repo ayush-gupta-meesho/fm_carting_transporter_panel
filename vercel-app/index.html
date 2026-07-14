@@ -354,6 +354,9 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
           <div class="filt"><span class="fl-lbl">Hours:</span>
             <select id="l1Hours" onchange="renderContracts()"><option value="all">All</option><option>12hr</option><option>24hr</option></select>
           </div>
+          <div class="filt" id="l1VendorWrap" style="display:none;"><span class="fl-lbl">Vendor:</span>
+            <select id="l1Vendor" onchange="renderContracts()"><option value="all">All vendors</option></select>
+          </div>
         </div>
 
         <div class="contract-list" id="contractList"></div>
@@ -627,6 +630,16 @@ function populateL1Filters(){
   });
   clusters.sort(); sizes.sort(); hours.sort();
   fillSelect('l1Cluster', clusters); fillSelect('l1Size', sizes); fillSelect('l1Hours', hours);
+  var vw=document.getElementById('l1VendorWrap'), vs=document.getElementById('l1Vendor');
+  if(IS_ADMIN && vw && vs){
+    vw.style.display='';
+    var seen={}, opts=[];
+    CONTRACTS.forEach(function(c){ var o=c.oracle||''; if(o && !seen[o]){ seen[o]=1; opts.push({v:o,t:(c.vendor||o)+' ('+o+')'}); } });
+    opts.sort(function(a,b){ return a.t<b.t?-1:(a.t>b.t?1:0); });
+    var cur=vs.value;
+    vs.innerHTML='<option value="all">All vendors</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.t+'</option>';}).join('');
+    if(cur==='all' || opts.some(function(o){return o.v===cur;})) vs.value=cur;
+  } else if(vw){ vw.style.display='none'; }
 }
 var IS_ADMIN=false;
 var SIZING={over:['#FBEDEB','#C0392B','Over-contracted'],good:['#E6F5EC','#1E7E34','Well-sized'],under:['#FFF3DE','#B77503','Under-contracted']};
@@ -638,12 +651,14 @@ function renderContracts(){
   var fc=document.getElementById('l1Cluster').value;
   var fs=document.getElementById('l1Size').value;
   var fh=document.getElementById('l1Hours').value;
+  var fv=(document.getElementById('l1Vendor')||{}).value||'all';
 
   var rows=CONTRACTS.filter(function(c){
+    if(IS_ADMIN && fv!=='all' && (c.oracle||'')!==fv) return false;
     if(fc!=='all' && c.cluster!==fc) return false;
     if(fs!=='all' && c.size!==fs) return false;
     if(fh!=='all' && c.hours!==fh) return false;
-    if(q && !((c.cluster+' '+c.size+' '+c.id).toLowerCase().indexOf(q)>-1)) return false;
+    if(q && !(((c.vendor||'')+' '+c.cluster+' '+c.size+' '+c.id).toLowerCase().indexOf(q)>-1)) return false;
     return true;
   });
 
