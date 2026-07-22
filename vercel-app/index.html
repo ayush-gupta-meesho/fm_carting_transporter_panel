@@ -789,7 +789,7 @@ function renderVehicles(){
     return '<tr class="vrow" onclick="openVehicleTrips(\''+v.name+'\')">'+
       '<td><div class="vname-cell"><div class="vdot '+(v.tag==='repl'?'repl':'')+'">'+v.name+'</div>'+
       '<div><div style="font-weight:600">'+v.name+' <span style="font-size:10px;color:var(--muted);font-weight:400;">· '+v.size+'</span></div>'+
-      '<div style="font-size:10px;color:var(--muted)">'+v.no+'</div></div></div></td>'+
+      '<div style="font-size:10px;color:var(--muted)">'+v.no+'</div>'+(v.periodLabel?'<div style="font-size:9.5px;color:var(--amber);font-weight:600;margin-top:1px;">'+v.periodLabel+'</div>':'')+'</div></div></td>'+
       '<td>'+tagBadge+projPill+'</td>'+
       '<td class="km-cell"><b>'+vkm.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span>'+foldNote+'</td>'+
       '<td>'+v.regTrips+'</td><td>'+v.adhocTrips+'</td><td>'+v.total+'</td>'+

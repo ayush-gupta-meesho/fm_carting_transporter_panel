@@ -110,6 +110,15 @@ function _fmtRange(a, b) {
   if (!da || !db) return (_s(a) + (_s(b) ? ' – ' + _s(b) : ''));
   return Utilities.formatDate(da, _tz(), 'd MMM') + ' – ' + Utilities.formatDate(db, _tz(), 'd MMM yyyy');
 }
+// compact vehicle active period: "20\u201331 Jul" (same month) or "28 Jul \u2013 3 Aug"
+function _fmtVehPeriod(a, b) {
+  var da = _toDate(a), db = _toDate(b); if (!da || !db) return '';
+  var tz = _tz();
+  var sameMon = Utilities.formatDate(da, tz, 'MMM yyyy') === Utilities.formatDate(db, tz, 'MMM yyyy');
+  return sameMon
+    ? Utilities.formatDate(da, tz, 'd') + '\u2013' + Utilities.formatDate(db, tz, 'd MMM')
+    : Utilities.formatDate(da, tz, 'd MMM') + ' \u2013 ' + Utilities.formatDate(db, tz, 'd MMM');
+}
 function _toDate(v) {
   if (v instanceof Date && !isNaN(v.getTime())) return v;
   if (v === '' || v === null || v === undefined) return null;
@@ -314,6 +323,8 @@ function _buildVendorPayload(oracle, opts) {
     var labelOf = {}; // vehicle_number -> "V1"
     var defSet = {};  // default (contracted) vehicle numbers for this contract
     defaults.forEach(function (v, i) { labelOf[_s(v.vehicle_number)] = 'V' + (i + 1); defSet[_s(v.vehicle_number)] = true; });
+    var vehDates = {};  // vehicle_number -> {start,end}  (per-vehicle active period; subset of contract period)
+    defaults.forEach(function (v) { vehDates[_s(v.vehicle_number)] = { start: _s(v.start_date), end: _s(v.end_date) }; });
 
     var cTrips = tripsByContract[cid] || [];
 
@@ -356,7 +367,9 @@ function _buildVendorPayload(oracle, opts) {
       var isAdhoc = _low(billing) === 'adhoc';
       var isRepl  = (!!no && !defSet[no]) || _yes(t.replacement_flag_system) || _low(t.replacement_flag_system) === 'repl';
       var km      = _num(t.total_trip_km);
-      var rto     = _low(t.challan_type) === 'rto' || (!_yes(t.km_accumulated_flag) && km === 0 && !isAdhoc && (_s(t.km_accumulated_flag) !== ''));
+      var _cf     = _low(t.challan_type_final);   // ground override of RTO (wins over system challan_type)
+      var rto     = _cf ? (_cf.indexOf('rto') === 0)
+                        : (_low(t.challan_type).indexOf('rto') === 0 || (!_yes(t.km_accumulated_flag) && km === 0 && !isAdhoc && (_s(t.km_accumulated_flag) !== '')));
 
       if (!agg[no]) agg[no] = newAgg();
       if (isAdhoc) { agg[no].adhocTrips++; }
@@ -395,6 +408,12 @@ function _buildVendorPayload(oracle, opts) {
       var a = agg[no] || newAgg();
       var o = { name: labelOf[no] || no, no: no, size: size, tag: tag,
                km: a.km, regTrips: a.regTrips, adhocTrips: a.adhocTrips, total: a.regTrips + a.adhocTrips };
+      // per-vehicle active period — shown only when it is a strict subset of the contract period (mid-month add/removal)
+      var vd = vehDates[no] || {};
+      var _cs = _toDate(c.contract_start_date), _ce = _toDate(c.contract_end_date);
+      var _vs = _toDate(vd.start), _ve = _toDate(vd.end);
+      var _partial = (_vs && _cs && _vs > _cs) || (_ve && _ce && _ve < _ce);
+      o.periodLabel = (_partial && _vs && _ve) ? ('Active ' + _fmtVehPeriod(vd.start, vd.end)) : '';
       if (opts.admin) {
         var isDef = (tag === 'default');
         o.slab = isDef ? (vehSlab[no] || 0) : 0;
@@ -402,7 +421,8 @@ function _buildVendorPayload(oracle, opts) {
         o.replFolded = isDef ? (foldCnt[no] || 0) : 0;
         o.effectiveKm = a.km + o.replFoldedKm;                 // default estimation incl. replacement KMs
         if (isDef && o.slab > 0) {
-          var pf = _projFields(o.effectiveKm, o.slab, c.contract_start_date, c.contract_end_date);
+          var _ps = vd.start || c.contract_start_date, _pe = vd.end || c.contract_end_date;  // project on the vehicle's OWN period
+          var pf = _projFields(o.effectiveKm, o.slab, _ps, _pe);
           o.projKm = pf.projected; o.projPct = pf.projPct; o.sizing = pf.sizing;
         }
       }
@@ -449,7 +469,8 @@ function _buildVendorPayload(oracle, opts) {
       var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Adhoc';
       var isAdhoc = _low(billing) === 'adhoc';
       var km = _num(t.total_trip_km);
-      var rto = _low(t.challan_type) === 'rto';
+      var _cfb = _low(t.challan_type_final);
+      var rto = _cfb ? (_cfb.indexOf('rto') === 0) : (_low(t.challan_type).indexOf('rto') === 0);
       if (!oAgg[no]) oAgg[no] = { km: 0, regTrips: 0, adhocTrips: 0 };
       if (isAdhoc) oAgg[no].adhocTrips++; else { oAgg[no].regTrips++; if (!rto) oAgg[no].km += km; }
       return {
@@ -519,8 +540,8 @@ function setupSheet() {
   var ss = _ss();
   var schema = {
     'Contract_Info': ['contract_id','vendor_oracle_id','vendor_name','cluster','vehicle_size','hours_slab','no_of_vehicles','total_km_slab','fixed_monthly_value','ex_km_rate','contract_start_date','contract_end_date','contract_status'],
-    'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days'],
-    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','contract_id','vehicle_number','vehicle_size','trip_cluster','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
+    'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','start_date','end_date'],
+    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','contract_id','vehicle_number','vehicle_size','trip_cluster','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
     'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
     'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
@@ -620,7 +641,59 @@ function onOpen() {
     .addSeparator()
     .addItem('6 · Turn ON auto-apply (drain + sync, 10 min)', 'createDrainSyncFromMenu')
     .addItem('7 · Stop auto-apply', 'stopSyncFromMenu')
+    .addSeparator()
+    .addItem('8 · Set vehicle dropdowns on Trip_Level', 'applyReplacedVehicleValidationFromMenu')
     .addToUi();
+}
+
+/* ============================ Data-validation: replaced_default_vehicle_final ============================ *
+ * Per-row DEPENDENT dropdown. For each Trip_Level row, the allowed values on
+ * replaced_default_vehicle_final are the DEFAULT vehicles of that row's contract_id (column D),
+ * read from Contract_Vehicles. Contract ids with no defaults (e.g. Other Adhoc "ADHOC-<oracle>")
+ * get their validation cleared (blank allowed) — an adhoc trip has no default to fold into.
+ * Re-run this from the menu after new trips / contracts load. Keys purely on whether the contract_id
+ * exists in Contract_Vehicles, so the exact adhoc-id format does not matter.
+ * ============================================================================================== */
+function applyReplacedVehicleValidationFromMenu() {
+  SpreadsheetApp.getUi().alert(applyReplacedVehicleValidation());
+}
+function applyReplacedVehicleValidation() {
+  var ctx = _ctx(TABS.tripLevel, 'trip_id');
+  var cIdx = ctx.idx['contract_id'], rIdx = ctx.idx['replaced_default_vehicle_final'], tIdx = ctx.idx['trip_id'];
+  if (cIdx === undefined) throw new Error('Trip_Level: contract_id column not found.');
+  if (rIdx === undefined) throw new Error('Trip_Level: replaced_default_vehicle_final column not found.');
+
+  var byC = {};
+  _readTab('Contract_Vehicles', 'contract_id').forEach(function (v) {
+    var cd = _s(v.contract_id), no = _s(v.vehicle_number);
+    if (cd && no) (byC[cd] = byC[cd] || []).push(no);
+  });
+
+  var sh = ctx.sh;
+  var firstRow = ctx.headerRow + 2;                 // 1-based first data row
+  var lastRow = sh.getLastRow();
+  var applied = 0, cleared = 0;
+  for (var r = firstRow; r <= lastRow; r++) {
+    var row = ctx.values[r - 1];
+    if (!row || !_s(row[tIdx])) continue;           // skip blank rows
+    var cid = _s(row[cIdx]);
+    var cell = sh.getRange(r, rIdx + 1);
+    var list = cid ? byC[cid] : null;
+    if (list && list.length) {
+      cell.setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(list, true)
+          .setAllowInvalid(false)
+          .setHelpText('Must be a default vehicle of ' + cid + ' (from Contract_Vehicles).')
+          .build()
+      );
+      applied++;
+    } else {
+      cell.clearDataValidations();                  // ADHOC-<oracle> / no defaults -> leave free
+      cleared++;
+    }
+  }
+  return 'replaced_default_vehicle_final — dropdown set on ' + applied + ' row(s), cleared on ' + cleared + '.';
 }
 
 /** Menu wrapper: run the sync on demand and show the result (handy for testing). */
@@ -681,4 +754,38 @@ function _buildAdminPayload() {
     summary: { total: CONTRACTS.length, over: over, under: under, onTrack: onTrack, totalSlab: totSlab, totalActual: totActual },
     contracts: CONTRACTS, vehicles: VEHICLES, trips: TRIPS
   };
+}
+
+/* ============================ DEBUG: inspect what the sync produces for one contract ============================ *
+ * Run this from the Apps Script editor (change contractId below to the one you're debugging), then open
+ * View -> Logs (or Executions) and read the output. It shows, straight from the live sheet:
+ *   - the Contract_Vehicles default rows for the contract (vehicle_number + day1_order)
+ *   - the distinct vehicle numbers actually used by that contract's trips (with counts)
+ *   - any TRIP vehicle that is NOT in the default list (these render as "Replacement" on the panel)
+ *   - the vehicle list the panel payload would actually show (Vx | number | tag)
+ * Quotes are printed around vehicle numbers so trailing spaces / case are visible.
+ * ============================================================================================== */
+function debugContract() {
+  var contractId = 'RJK10-18838-20260717-01';   // <-- change to the contract you want to inspect
+
+  var ci = _readTab(TABS.contractInfo, 'contract_id').filter(function (r) { return _s(r.contract_id) === _s(contractId); });
+  if (!ci.length) { Logger.log('!! contract_id "' + contractId + '" NOT found in Contract_Info (check exact spelling/spaces)'); return; }
+  var oracle = _s(ci[0].vendor_oracle_id);
+  Logger.log('contract=' + contractId + '  oracle=' + oracle);
+
+  var cv = _readTab(TABS.contractVehicles, 'contract_id').filter(function (r) { return _s(r.contract_id) === _s(contractId); });
+  Logger.log('--- Contract_Vehicles default rows: ' + cv.length + ' ---');
+  var cvset = {};
+  cv.forEach(function (r) { var v = _s(r.vehicle_number); cvset[v] = 1; Logger.log('   "' + v + '"  day1_order=' + _s(r.day1_order)); });
+
+  var tl = _readTab(TABS.tripLevel, 'trip_id').filter(function (r) { return _s(r.contract_id) === _s(contractId); });
+  var tv = {};
+  tl.forEach(function (t) { var v = _s(t.vehicle_number); tv[v] = (tv[v] || 0) + 1; });
+  Logger.log('--- distinct trip vehicles: ' + Object.keys(tv).length + ' ---');
+  Object.keys(tv).forEach(function (v) { Logger.log('   "' + v + '"  trips=' + tv[v] + (cvset[v] ? '' : '   <-- NOT a default -> shows as Replacement')); });
+
+  var p = _buildVendorPayload(oracle);
+  var vs = (p.vehicles[contractId] || []);
+  Logger.log('--- payload vehicle list the panel would render: ' + vs.length + ' ---');
+  vs.forEach(function (v) { Logger.log('   ' + v.name + ' | "' + v.no + '" | tag=' + v.tag); });
 }

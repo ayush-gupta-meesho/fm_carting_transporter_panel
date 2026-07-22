@@ -208,6 +208,8 @@ function transferReadyTrips() {
   var _cv = _readTab('Contract_Vehicles', 'contract_id');
   var defBy = {};   // contract_id -> { vehicle_number: true }  (default / contracted vehicles)
   _cv.forEach(function (v) { var cd = _s(v.contract_id); (defBy[cd] = defBy[cd] || {})[_s(v.vehicle_number)] = true; });
+  var vehHome = {};   // vehicle_number -> a REAL contract where it is a default (misattribution hint)
+  _cv.forEach(function (v) { var no = _s(v.vehicle_number); if (no && !vehHome[no]) vehHome[no] = _s(v.contract_id); });
   var iso = function (d) { return Utilities.formatDate(d, _tz(), "yyyy-MM-dd'T'HH:mm:ss"); };
   for (var i = ctx.headerRow + 1; i < ctx.values.length; i++) {
     var rv = ctx.values[i];
@@ -241,6 +243,16 @@ function transferReadyTrips() {
       if (_s(rv[ctx.idx['replaced_default_vehicle_final']])) _setCell(ctx, i, 'replaced_default_vehicle_final', '');
     }
 
+    // Attribution flag: Regular set on an ADHOC-bucket trip, or on a trip whose vehicle is actually a
+    // default of a DIFFERENT real contract -> the fix is to correct contract_id, not the billing type.
+    var _isAdhocBucket = _cid.toUpperCase().indexOf('ADHOC') === 0;
+    var _home = vehHome[_vno] || '';
+    var _flagAttr = _partial && (_isAdhocBucket || (_home && _home !== _cid));
+    var _actionState = _flagAttr ? 'NEEDS_ATTRIBUTION_FIX' : (groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION');
+    var _dataSent = _flagAttr
+      ? ('ATTRIBUTION_FIX: Regular set on ' + _cid + (_home ? (' \u2014 vehicle ' + _vno + ' is a default of ' + _home + '; set contract_id to it') : ' \u2014 vehicle is not a default of any contract'))
+      : (_partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL'));
+
     // Ground_Confirmation_Log FIRST → a log failure leaves the trip un-transferred / retryable
     _appendByHeaders(LOG_TABS.ground, 'log_id', {
       log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + i,
@@ -248,11 +260,11 @@ function transferReadyTrips() {
       contract_id: _s(rv[ctx.idx['contract_id']]), transporter_oracle_id: _s(rv[ctx.idx['transporter_oracle_id']]),
       trip_end_time: _s(rv[ctx.idx['trip_end_time']]), ground_review_deadline: iso(dl),
       sent_to_vendor_timestamp: ts,
-      ground_action_state: groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION',
+      ground_action_state: _actionState,
       billing_before: _s(rv[ctx.idx['billing_type_system']]), billing_after: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
       replaced_vehicle_before: _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       replaced_vehicle_after: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
-      data_sent: _partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL'),
+      data_sent: _dataSent,
       partial_edit_flag: _partial ? 'Yes' : 'No'
     });
 
