@@ -410,10 +410,7 @@ function _buildVendorPayload(oracle, opts) {
                km: a.km, regTrips: a.regTrips, adhocTrips: a.adhocTrips, total: a.regTrips + a.adhocTrips };
       // per-vehicle active period — shown only when it is a strict subset of the contract period (mid-month add/removal)
       var vd = vehDates[no] || {};
-      var _cs = _toDate(c.contract_start_date), _ce = _toDate(c.contract_end_date);
-      var _vs = _toDate(vd.start), _ve = _toDate(vd.end);
-      var _partial = (_vs && _cs && _vs > _cs) || (_ve && _ce && _ve < _ce);
-      o.periodLabel = (_partial && _vs && _ve) ? ('Active ' + _fmtVehPeriod(vd.start, vd.end)) : '';
+      o.periodLabel = _fmtVehPeriod(vd.start || c.contract_start_date, vd.end || c.contract_end_date);  // shown for ALL vehicles (own period, else contract period)
       if (opts.admin) {
         var isDef = (tag === 'default');
         o.slab = isDef ? (vehSlab[no] || 0) : 0;
