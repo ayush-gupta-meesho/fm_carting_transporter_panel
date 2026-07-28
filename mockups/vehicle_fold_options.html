@@ -1,0 +1,114 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor Vehicle View — Replacement KM Fold: Option A vs B</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#0E2E56;--blue:#1F8FD0;--ink:#1A2A3A;--muted:#6B7887;--line:#E4E9F0;--bg:#F4F7FB;
+--amber:#B77503;--amberbg:#FFF3DE;--red:#C0392B;--redbg:#FBEDEB;--green:#1E7E34;--greenbg:#E6F5EC;--violet:#5A3FB0;--violetbg:#EFEAFB;--defbg:#EAF3FA;}
+*{box-sizing:border-box;font-family:Poppins,Arial,sans-serif;}
+body{margin:0;background:var(--bg);color:var(--ink);padding:26px;}
+h1{font-size:19px;margin:0 0 4px;color:var(--navy);}
+.sub{color:var(--muted);font-size:13px;margin:0 0 22px;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+@media(max-width:1180px){.grid{grid-template-columns:1fr;}}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 18px 20px;box-shadow:0 2px 10px rgba(20,50,90,.05);}
+.opt-h{display:flex;align-items:center;gap:10px;margin-bottom:2px;}
+.opt-h .pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--navy);color:#fff;}
+.opt-h h2{font-size:15px;margin:0;color:var(--navy);}
+.opt-desc{color:var(--muted);font-size:12px;margin:6px 0 14px;line-height:1.5;}
+table{width:100%;border-collapse:collapse;font-size:12.5px;}
+thead th{background:var(--navy);color:#fff;font-weight:600;font-size:10.5px;text-align:left;padding:9px 10px;white-space:nowrap;}
+thead th:first-child{border-top-left-radius:8px;}thead th:last-child{border-top-right-radius:8px;}
+thead th.num,tbody td.num{text-align:center;}
+tbody td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+tr.last td{border-bottom:none;}
+.vname{display:flex;align-items:center;gap:9px;}
+.vdot{width:34px;height:34px;border-radius:9px;background:var(--navy);color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
+.vdot.repl{background:var(--violet);}
+.vno{font-size:10px;color:var(--muted);}
+.vt{font-weight:600;}
+.tagcell{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:11px;display:inline-block;white-space:nowrap;}
+.b-def{background:var(--defbg);color:var(--blue);}
+.b-repl{background:var(--violetbg);color:var(--violet);}
+.util{font-size:10px;font-weight:700;padding:2px 8px;border-radius:11px;display:inline-block;white-space:nowrap;}
+.u-under{background:var(--amberbg);color:var(--amber);}
+.u-over{background:var(--redbg);color:var(--red);}
+.u-ok{background:var(--greenbg);color:var(--green);}
+.km{font-weight:700;font-size:14px;}
+.km-sub{font-size:9px;color:var(--violet);font-weight:600;}
+.dim{color:#AEB7C2;font-weight:700;font-size:14px;}
+/* single dotted separator, no solid line above */
+tr.sepdot td{border:none;padding:0;}
+.dsep{border-top:2px dotted var(--blue);margin:2px 2px;height:0;position:relative;}
+.dsep span{position:absolute;top:-9px;left:10px;background:#fff;padding:0 8px;font-size:10px;font-weight:700;color:var(--blue);}
+.cap{margin-top:14px;font-size:11.5px;color:var(--ink);background:#F7FAFE;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:9px 12px;line-height:1.5;}
+.legend{font-size:11px;color:var(--muted);margin-top:26px;text-align:center;}
+</style></head><body>
+<h1>Vendor Vehicle View — folding replacement KMs into default vehicles</h1>
+<p class="sub">Same data, two ways to show it. Contract: <b>Krushiv Enterprise · Rajkot · 10FT · 4 vehicles · 12hr</b> · pegged 400 km/vehicle · Total actual = <b>1,224 km</b> (identical in both). Only <b>default</b> vehicle KMs count toward the contract.</p>
+<div class="grid">
+
+<!-- OPTION A -->
+<div class="card">
+  <div class="opt-h"><span class="pill">Option A</span><h2>Dotted line · replacement KMs still shown (greyed)</h2></div>
+  <p class="opt-desc">Defaults on top with folded KM; one dotted line separates them from replacements, whose KM is shown greyed (already counted in a default).</p>
+  <table>
+    <thead><tr><th>Vehicle</th><th>Tag</th><th>Regular KMs</th><th class="num">Regular Trips</th><th class="num">Adhoc Trips</th><th class="num">Trips Till Date</th></tr></thead>
+    <tbody>
+      <tr><td><div class="vname"><div class="vdot">V1</div><div><div class="vt">V1 · 10FT</div><div class="vno">GJ03CU2335</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 71%</span></div></td>
+          <td><span class="km">285</span> km</td><td class="num">9</td><td class="num">0</td><td class="num">9</td></tr>
+      <tr><td><div class="vname"><div class="vdot">V2</div><div><div class="vt">V2 · 10FT</div><div class="vno">GJ03CU3905</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 76%</span></div></td>
+          <td><span class="km">305</span> km<div class="km-sub">incl 2 repl trips KM</div></td><td class="num">4</td><td class="num">0</td><td class="num">4</td></tr>
+      <tr><td><div class="vname"><div class="vdot">V3</div><div><div class="vt">V3 · 10FT</div><div class="vno">GJ10TY4219</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 56%</span></div></td>
+          <td><span class="km">225</span> km</td><td class="num">7</td><td class="num">0</td><td class="num">7</td></tr>
+      <tr class="last"><td><div class="vname"><div class="vdot">V4</div><div><div class="vt">V4 · 10FT</div><div class="vno">GJ03BZ4234</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-over">Over-contracted · 102%</span></div></td>
+          <td><span class="km">409</span> km<div class="km-sub">incl 2 repl trips KM</div></td><td class="num">8</td><td class="num">0</td><td class="num">8</td></tr>
+      <tr class="sepdot"><td colspan="6"><div class="dsep"><span>Replacements — already counted above</span></div></td></tr>
+      <tr><td><div class="vname"><div class="vdot repl">R</div><div><div class="vt">Replacement · 10FT</div><div class="vno">GJ36V8968</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-repl">Replacement</span></div></td>
+          <td><span class="dim">120</span> <span style="font-size:10px;color:#AEB7C2;">km</span></td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+      <tr><td><div class="vname"><div class="vdot repl">R</div><div><div class="vt">Replacement · 10FT</div><div class="vno">GJ03CU2168</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-repl">Replacement</span></div></td>
+          <td><span class="dim">60</span> <span style="font-size:10px;color:#AEB7C2;">km</span></td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+    </tbody>
+  </table>
+  <div class="cap"><b>How to read:</b> Only the KMs <b>above the dotted line</b> (default vehicles) are added to your contract. Replacement KMs below are greyed because they're already folded into the default(s) they covered — don't add them again.</div>
+</div>
+
+<!-- OPTION B -->
+<div class="card">
+  <div class="opt-h"><span class="pill">Option B</span><h2>Replacement rows show no KM (just a dash)</h2></div>
+  <p class="opt-desc">Defaults carry the folded KM. Replacement rows keep all other info but show a dash for KM — so each KM appears exactly once.</p>
+  <table>
+    <thead><tr><th>Vehicle</th><th>Tag</th><th>Regular KMs</th><th class="num">Regular Trips</th><th class="num">Adhoc Trips</th><th class="num">Trips Till Date</th></tr></thead>
+    <tbody>
+      <tr><td><div class="vname"><div class="vdot">V1</div><div><div class="vt">V1 · 10FT</div><div class="vno">GJ03CU2335</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 71%</span></div></td>
+          <td><span class="km">285</span> km</td><td class="num">9</td><td class="num">0</td><td class="num">9</td></tr>
+      <tr><td><div class="vname"><div class="vdot">V2</div><div><div class="vt">V2 · 10FT</div><div class="vno">GJ03CU3905</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 76%</span></div></td>
+          <td><span class="km">305</span> km<div class="km-sub">incl 2 repl trips KM</div></td><td class="num">4</td><td class="num">0</td><td class="num">4</td></tr>
+      <tr><td><div class="vname"><div class="vdot">V3</div><div><div class="vt">V3 · 10FT</div><div class="vno">GJ10TY4219</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-under">Under-contracted · 56%</span></div></td>
+          <td><span class="km">225</span> km</td><td class="num">7</td><td class="num">0</td><td class="num">7</td></tr>
+      <tr><td><div class="vname"><div class="vdot">V4</div><div><div class="vt">V4 · 10FT</div><div class="vno">GJ03BZ4234</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-def">Default</span><span class="util u-over">Over-contracted · 102%</span></div></td>
+          <td><span class="km">409</span> km<div class="km-sub">incl 2 repl trips KM</div></td><td class="num">8</td><td class="num">0</td><td class="num">8</td></tr>
+      <tr><td><div class="vname"><div class="vdot repl">R</div><div><div class="vt">Replacement · 10FT</div><div class="vno">GJ36V8968</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-repl">Replacement</span></div></td>
+          <td><span class="dim">—</span></td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+      <tr><td><div class="vname"><div class="vdot repl">R</div><div><div class="vt">Replacement · 10FT</div><div class="vno">GJ03CU2168</div></div></div></td>
+          <td><div class="tagcell"><span class="badge b-repl">Replacement</span></div></td>
+          <td><span class="dim">—</span></td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+    </tbody>
+  </table>
+  <div class="cap"><b>How to read:</b> Each vehicle's KM shows in exactly one place — the default it rolled into (see the "incl … repl trips KM" note). A replacement row shows trips only, not KM.</div>
+</div>
+
+</div>
+<p class="legend">Both views total the same 1,224 km toward the contract. Utilisation % = folded KM ÷ pegged 400 km/vehicle. For feedback only — not the live panel.</p>
+</body></html>

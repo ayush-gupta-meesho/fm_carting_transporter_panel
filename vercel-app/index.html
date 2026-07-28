@@ -112,6 +112,10 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 .vrow{cursor:pointer;transition:background .12s;}
 .vrow:hover{background:#F7FBFE;}
 .vname-cell{display:flex;align-items:center;gap:9px;}
+.vsep td{border:none !important;padding:0;}
+.vsep-line{border-top:2px dotted var(--blue);margin:7px 2px 3px;height:0;position:relative;}
+.vsep-line span{position:absolute;top:-9px;left:10px;background:#fff;padding:0 8px;font-size:10px;font-weight:700;color:var(--blue);white-space:nowrap;}
+.vtable tr.vrow.lastdef td{border-bottom:none;}
 .vdot{width:32px;height:32px;border-radius:8px;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;}
 .vdot.repl{background:var(--violet);}
 
@@ -416,7 +420,7 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 
         <!-- TAB 1: Vehicle level -->
         <div id="l2-veh">
-          <div class="mis-context"><b>Default vehicles</b> are the vehicles locked on Day 1 of the contract — they stay fixed for the whole contract period. A <b>replacement</b> vehicle stands in for a default when one is unavailable, and its regular KMs are aggregated back to the default vehicle it replaced. Only <b>regular trip KMs</b> are aggregated at the vehicle level; adhoc trips are billed separately and shown with their amount in the trip view.</div>
+          <div class="mis-context"><b>Default vehicles</b> are your Day-1 contracted vehicles — only these count toward the contract. When a <b>replacement</b> runs in place of a default, its KMs are added into that default, so the replacement KMs shown below the line are already included above. Adhoc trips are billed separately and shown in the trip view.</div>
           <div class="filters">
             <div class="filt"><span class="fl-lbl">Vehicle Type:</span>
               <select id="vehTypeFilter" onchange="renderVehicles()"><option value="all">All</option><option value="default">Default only</option><option value="repl">Replacement only</option></select>
@@ -781,20 +785,34 @@ function renderVehicles(){
   var list=VEHICLES[c.id]||[];
   var f=document.getElementById('vehTypeFilter').value;
   var rows=list.filter(function(v){ return f==='all'||v.tag===f; });
-  document.getElementById('vehBody').innerHTML=rows.map(function(v){
-    var tagBadge=v.tag==='default'?'<span class="badge b-default">Default</span>':'<span class="badge b-repl">Replacement</span>';
-    var vkm=(IS_ADMIN&&v.effectiveKm!=null)?v.effectiveKm:v.km;
-    var foldNote=(IS_ADMIN&&v.replFolded>0)?'<div style="font-size:9px;color:var(--violet);margin-top:1px;">incl '+v.replFolded+' repl trip'+(v.replFolded>1?'s':'')+' KM</div>':'';
-    var projPill=(IS_ADMIN&&v.sizing)?' '+sizingPill(v.sizing,v.projPct):'';
-    return '<tr class="vrow" onclick="openVehicleTrips(\''+v.name+'\')">'+
-      '<td><div class="vname-cell"><div class="vdot '+(v.tag==='repl'?'repl':'')+'">'+v.name+'</div>'+
+  var hasDef=rows.some(function(v){return v.tag==='default';});
+  var hasRepl=rows.some(function(v){return v.tag!=='default';});
+  var lastDefIdx=-1; rows.forEach(function(v,i){ if(v.tag==='default') lastDefIdx=i; });
+  var out='', sepDone=false;
+  rows.forEach(function(v,i){
+    var isRepl=(v.tag!=='default');
+    if(!sepDone && hasDef && hasRepl && isRepl){
+      out+='<tr class="vsep"><td colspan="7"><div class="vsep-line"><span>Replacements — KMs already included in the default vehicles above</span></div></td></tr>';
+      sepDone=true;
+    }
+    var tagBadge=isRepl?'<span class="badge b-repl">Replacement</span>':'<span class="badge b-default">Default</span>';
+    var projPill=(v.sizing)?' '+sizingPill(v.sizing,v.projPct):'';
+    var foldNote=(v.replFolded>0)?'<div style="font-size:9px;color:var(--violet);margin-top:1px;">incl '+v.replFolded+' repl trip'+(v.replFolded>1?'s':'')+' KM</div>':'';
+    var vkm=(v.effectiveKm!=null)?v.effectiveKm:v.km;
+    var kmCell=isRepl
+      ? '<span style="color:#AEB7C2;font-weight:700;">'+(v.km!=null?v.km:0).toLocaleString('en-IN')+'</span> <span class="km-sub" style="color:#AEB7C2;">km</span><div style="font-size:9px;color:var(--muted);margin-top:1px;">Included in Default Vehicles</div>'
+      : '<b>'+vkm.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span>'+foldNote;
+    var rowClass='vrow'+((i===lastDefIdx && hasRepl)?' lastdef':'');
+    out+='<tr class="'+rowClass+'" onclick="openVehicleTrips(\''+v.name+'\')">'+
+      '<td><div class="vname-cell"><div class="vdot '+(isRepl?'repl':'')+'">'+v.name+'</div>'+
       '<div><div style="font-weight:600">'+v.name+' <span style="font-size:10px;color:var(--muted);font-weight:400;">· '+v.size+'</span></div>'+
       '<div style="font-size:10px;color:var(--muted)">'+v.no+'</div>'+(v.periodLabel?'<div style="font-size:9.5px;color:var(--muted);margin-top:1px;">'+v.periodLabel+'</div>':'')+'</div></div></td>'+
       '<td>'+tagBadge+projPill+'</td>'+
-      '<td class="km-cell"><b>'+vkm.toLocaleString('en-IN')+'</b> <span class="km-sub">km</span>'+foldNote+'</td>'+
+      '<td class="km-cell">'+kmCell+'</td>'+
       '<td>'+v.regTrips+'</td><td>'+v.adhocTrips+'</td><td>'+v.total+'</td>'+
       '<td style="color:var(--blue);font-size:16px;">›</td></tr>';
-  }).join('');
+  });
+  document.getElementById('vehBody').innerHTML=out;
 }
 function openVehicleTrips(vname){
   showL2Tab('trip');

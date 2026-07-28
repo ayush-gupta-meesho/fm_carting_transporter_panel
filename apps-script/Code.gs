@@ -379,7 +379,7 @@ function _buildVendorPayload(oracle, opts) {
       if (d && (!lastTripDate || d > lastTripDate)) lastTripDate = d;
 
       var replForNo = _s(t.replaced_default_vehicle_final) || _s(t.replaced_default_vehicle_system);
-      if (opts.admin && !isAdhoc && isRepl && !rto && replForNo) {
+      if (!isAdhoc && isRepl && !rto && replForNo) {
         foldKm[replForNo] = (foldKm[replForNo] || 0) + km; foldCnt[replForNo] = (foldCnt[replForNo] || 0) + 1;
       }
       var route = _buildRoute(t);
@@ -411,17 +411,16 @@ function _buildVendorPayload(oracle, opts) {
       // per-vehicle active period — shown only when it is a strict subset of the contract period (mid-month add/removal)
       var vd = vehDates[no] || {};
       o.periodLabel = _fmtVehPeriod(vd.start || c.contract_start_date, vd.end || c.contract_end_date);  // shown for ALL vehicles (own period, else contract period)
-      if (opts.admin) {
-        var isDef = (tag === 'default');
-        o.slab = isDef ? (vehSlab[no] || 0) : 0;
-        o.replFoldedKm = isDef ? (foldKm[no] || 0) : 0;
-        o.replFolded = isDef ? (foldCnt[no] || 0) : 0;
-        o.effectiveKm = a.km + o.replFoldedKm;                 // default estimation incl. replacement KMs
-        if (isDef && o.slab > 0) {
-          var _ps = vd.start || c.contract_start_date, _pe = vd.end || c.contract_end_date;  // project on the vehicle's OWN period
-          var pf = _projFields(o.effectiveKm, o.slab, _ps, _pe);
-          o.projKm = pf.projected; o.projPct = pf.projPct; o.sizing = pf.sizing;
-        }
+      // fold replacement KMs into the default + per-vehicle utilisation — shown on BOTH vendor and admin
+      var isDef = (tag === 'default');
+      o.slab = isDef ? (vehSlab[no] || 0) : 0;
+      o.replFoldedKm = isDef ? (foldKm[no] || 0) : 0;
+      o.replFolded = isDef ? (foldCnt[no] || 0) : 0;
+      o.effectiveKm = a.km + o.replFoldedKm;                   // default vehicle KM incl. its replacements
+      if (isDef && o.slab > 0) {
+        var _ps = vd.start || c.contract_start_date, _pe = vd.end || c.contract_end_date;  // project on the vehicle's OWN period
+        var pf = _projFields(o.effectiveKm, o.slab, _ps, _pe);
+        o.projKm = pf.projected; o.projPct = pf.projPct; o.sizing = pf.sizing;
       }
       return o;
     }
