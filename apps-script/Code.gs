@@ -279,6 +279,74 @@ function _buildDisputeMap(oracle) {
   return map;
 }
 
+/* ===================== SINGLE SOURCE OF TRUTH: per-trip classification =====================
+ * _buildVendorPayload (the panel) and Billing.gs (the billing MIS) BOTH call this function.
+ * That is deliberate: it is the only way the MIS and the panel cannot drift apart.
+ * Do not inline these rules anywhere else — extend them here.
+ *
+ *   billing   = billing_type_final || billing_type_system || defaultBilling
+ *   rto       = (challan_type_final || challan_type) startsWith 'rto',
+ *               or the zero-km + km_accumulated_flag='No' fallback on a Regular trip
+ *   isDefault = the (contract_id, vehicle_number) pair exists in Contract_Vehicles (exact string)
+ *   foldTo    = replaced_default_vehicle_final || replaced_default_vehicle_system
+ */
+function _classifyTrip(t, defSet, defaultBilling) {
+  defSet = defSet || {};
+  var no      = _s(t.vehicle_number);
+
+  // ---- route scope: SYSTEM ONLY. There is no route_scope_final; ground cannot revert it. ----
+  var scope   = _s(t.route_scope) || 'Local';
+  var isZonal = _low(scope) === 'zonal';
+
+  // On a zonal trip ground's billing_type_final is ignored outright, so "zonal adhoc cannot be
+  // reverted to Regular" holds by construction, not only by the guard in Actions.gs.
+  var billing = isZonal
+    ? (_s(t.billing_type_system) || (defaultBilling || 'Regular'))
+    : (_s(t.billing_type_final) || _s(t.billing_type_system) || (defaultBilling || 'Regular'));
+  var isAdhoc = _low(billing) === 'adhoc';
+
+  var km      = _num(t.total_trip_km);
+  var cf      = _low(t.challan_type_final);      // ground override of RTO wins over the system column
+  var rto     = cf ? (cf.indexOf('rto') === 0)
+                   : (_low(t.challan_type).indexOf('rto') === 0 ||
+                      (!_yes(t.km_accumulated_flag) && km === 0 && !isAdhoc && (_s(t.km_accumulated_flag) !== '')));
+
+  var isRepl  = (!!no && !defSet[no]) || _yes(t.replacement_flag_system) || _low(t.replacement_flag_system) === 'repl';
+  var foldTo  = _s(t.replaced_default_vehicle_final) || _s(t.replaced_default_vehicle_system);
+  var vs      = _low(t.vendor_status);
+  var settled = (vs === 'confirmed' || vs === 'reconfirmed');
+
+  // ---- money ----------------------------------------------------------------------------------
+  // zonalAmt is the RESOLVED zonal rate (an upheld dispute wins over the system value).
+  var zonalAmt = _num(t.zonal_rfq_amount_final) || _num(t.zonal_rfq_amount);
+  var adhocAmt = _num(t.adhoc_amount);
+  // ONE RTO RULE: an RTO trip pays nothing, whatever its scope or billing type. Confirmed 2026-08-07.
+  var payable  = rto ? 0 : (isAdhoc ? adhocAmt : (isZonal ? zonalAmt : 0));
+  // Only Local + Regular + non-RTO KM ever reaches the grouped KM slab.
+  var kmToSlab = (!isZonal && !isAdhoc && !rto);
+
+  return {
+    no:        no,
+    scope:     isZonal ? 'Zonal' : 'Local',
+    isZonal:   isZonal,
+    rfqId:     _s(t.rfq_id),
+    billing:   isAdhoc ? 'Adhoc' : 'Regular',
+    isAdhoc:   isAdhoc,
+    km:        km,
+    rto:       rto,
+    isRepl:    isRepl,
+    isDefault: (!!no && !!defSet[no]),
+    foldTo:    foldTo,
+    foldValid: (!!foldTo && !!defSet[foldTo]),
+    settled:   settled,
+    amt:       adhocAmt,      // raw sheet value
+    zonalAmt:  zonalAmt,      // raw resolved zonal rate
+    payable:   payable,       // what actually bills — RTO-aware. USE THIS, not amt/zonalAmt.
+    kmToSlab:  kmToSlab,
+    statusUi:  settled ? 'confirmed' : (vs === 'disputed' ? 'disputed' : (vs === 'reconfirm' ? 'reconfirm' : 'pending'))
+  };
+}
+
 function _buildVendorPayload(oracle, opts) {
   opts = opts || {};
   oracle = _s(oracle);
@@ -311,6 +379,7 @@ function _buildVendorPayload(oracle, opts) {
   });
 
   var CONTRACTS = [], VEHICLES = {}, TRIPS = {};
+  var ZONAL_CARDS = [], ZADHOC = [], ZADHOC_TOTAL = 0, _zonalByContract = {};
   var vendorName = myContracts.length ? _s(myContracts[0].vendor_name) : '';
   var clusters = {}, mtdKm = 0;
 
@@ -326,7 +395,14 @@ function _buildVendorPayload(oracle, opts) {
     var vehDates = {};  // vehicle_number -> {start,end}  (per-vehicle active period; subset of contract period)
     defaults.forEach(function (v) { vehDates[_s(v.vehicle_number)] = { start: _s(v.start_date), end: _s(v.end_date) }; });
 
-    var cTrips = tripsByContract[cid] || [];
+    var _all = tripsByContract[cid] || [];
+    // Zonal is a second axis: it never enters the slab, a vehicle row or a utilisation %, so it is
+    // separated out here and rendered as its own card. Zonal ADHOC goes to the vendor-level bucket.
+    var cTrips = [], zTrips = [];
+    _all.forEach(function (t) {
+      var sc = _low(_s(t.route_scope) || 'Local');
+      if (sc === 'zonal') { zTrips.push(t); } else { cTrips.push(t); }
+    });
 
     // replacement vehicles = trip vehicle_numbers not in defaults, in first-appearance order
     var nextIdx = defaults.length;
@@ -362,14 +438,12 @@ function _buildVendorPayload(oracle, opts) {
     defaults.forEach(function (v) { vehSlab[_s(v.vehicle_number)] = _num(v.pegged_km_slab); });
 
     var mappedTrips = cTrips.map(function (t) {
-      var no = _s(t.vehicle_number);
-      var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Regular';
-      var isAdhoc = _low(billing) === 'adhoc';
-      var isRepl  = (!!no && !defSet[no]) || _yes(t.replacement_flag_system) || _low(t.replacement_flag_system) === 'repl';
-      var km      = _num(t.total_trip_km);
-      var _cf     = _low(t.challan_type_final);   // ground override of RTO (wins over system challan_type)
-      var rto     = _cf ? (_cf.indexOf('rto') === 0)
-                        : (_low(t.challan_type).indexOf('rto') === 0 || (!_yes(t.km_accumulated_flag) && km === 0 && !isAdhoc && (_s(t.km_accumulated_flag) !== '')));
+      var _x      = _classifyTrip(t, defSet, 'Regular');   // shared classifier — see _classifyTrip
+      var no      = _x.no;
+      var isAdhoc = _x.isAdhoc;
+      var isRepl  = _x.isRepl;
+      var km      = _x.km;
+      var rto     = _x.rto;
 
       if (!agg[no]) agg[no] = newAgg();
       if (isAdhoc) { agg[no].adhocTrips++; }
@@ -378,7 +452,7 @@ function _buildVendorPayload(oracle, opts) {
       var d = _toDate(t.trip_end_time);
       if (d && (!lastTripDate || d > lastTripDate)) lastTripDate = d;
 
-      var replForNo = _s(t.replaced_default_vehicle_final) || _s(t.replaced_default_vehicle_system);
+      var replForNo = _x.foldTo;
       if (!isAdhoc && isRepl && !rto && replForNo) {
         foldKm[replForNo] = (foldKm[replForNo] || 0) + km; foldCnt[replForNo] = (foldCnt[replForNo] || 0) + 1;
       }
@@ -391,13 +465,14 @@ function _buildVendorPayload(oracle, opts) {
         vehNo:     no,
         route:     route,
         billing:   isAdhoc ? 'Adhoc' : 'Regular',
+        scope:     _x.scope,
         replTag:   (!isAdhoc && isRepl) ? 'repl' : 'default',
         replFor:   (!isAdhoc && isRepl) ? (labelOf[replForNo] || replForNo) : undefined,
         completed: _fmtShort(t.trip_end_time),
         km:        isAdhoc ? null : (rto ? 0 : km),
-        amt:       isAdhoc ? _num(t.adhoc_amount) : null,
+        amt:       isAdhoc ? _x.payable : null,          // RTO adhoc pays 0 — screen must match the bill
         rto:       rto ? true : undefined,
-        status:    (function(v){ return v==='confirmed'||v==='reconfirmed' ? 'confirmed' : (v==='disputed' ? 'disputed' : (v==='reconfirm' ? 'reconfirm' : 'pending')); })(_low(t.vendor_status)),
+        status:    _x.statusUi,
         win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         disp:      dmap[_s(t.trip_id)] || null
       };
@@ -430,6 +505,45 @@ function _buildVendorPayload(oracle, opts) {
     VEHICLES[cid] = vehList;
     TRIPS[cid] = mappedTrips;
 
+    /* ---- ZONAL: one card per contract_id, Regular only. No vehicle level exists for zonal, so the
+       card carries an empty VEHICLES list and the panel lands straight on the Trip tab. Zonal ADHOC
+       is pulled out to the vendor-level <oracle>_Zonal_Adhoc_Trips bucket. ---- */
+    var zReg = [], zTotal = 0, zRfq = {}, zRfqOrder = [];
+    zTrips.forEach(function (t) {
+      var zx = _classifyTrip(t, defSet, 'Regular');
+      var mapped = {
+        id: _s(t.trip_id), size: _s(t.vehicle_size) || _s(c.vehicle_size),
+        veh: zx.no, vehNo: zx.no, route: _buildRoute(t),
+        billing: zx.billing, scope: 'Zonal', rfq: zx.rfqId,
+        replTag: 'default', replFor: undefined,
+        completed: _fmtShort(t.trip_end_time),
+        km: null, amt: null, zamt: zx.payable,
+        rto: zx.rto ? true : undefined,
+        status: zx.statusUi,
+        win: zx.settled ? null : _fmtWin(t.dispute_window_end),
+        disp: dmap[_s(t.trip_id)] || null
+      };
+      if (zx.isAdhoc) { mapped.amt = zx.payable; mapped.zamt = null; ZADHOC.push(mapped); ZADHOC_TOTAL += zx.payable; return; }
+      zReg.push(mapped); zTotal += zx.payable;
+      var k = zx.rfqId || '(no RFQ id)';
+      if (!zRfq[k]) { zRfq[k] = { rfq: k, trips: 0, amt: 0 }; zRfqOrder.push(k); }
+      zRfq[k].trips++; zRfq[k].amt += zx.payable;
+    });
+    if (zReg.length) {
+      var ZID = cid + '::ZONAL';
+      VEHICLES[ZID] = [];                                  // no vehicle level for zonal
+      TRIPS[ZID] = zReg;
+      ZONAL_CARDS.push({
+        id: ZID, srcContract: cid, vendor: vendorName, size: _s(c.vehicle_size),
+        cluster: _s(c.cluster), nveh: 0, hours: '\u2014', regKm: 0, overRate: 0,
+        duration: _fmtRange(c.contract_start_date, c.contract_end_date),
+        lastTrip: '\u2014', tiers: [], isZonalCard: true,
+        zonalTotal: Math.round(zTotal), zonalTrips: zReg.length,
+        rfqGroups: zRfqOrder.map(function (k) { return zRfq[k]; })
+      });
+    }
+    _zonalByContract[cid] = { trips: zReg.length, total: Math.round(zTotal) };
+
     if (_s(c.cluster)) clusters[_s(c.cluster)] = true;
     mtdKm += contractRegKm;
 
@@ -455,26 +569,78 @@ function _buildVendorPayload(oracle, opts) {
     }
   });
 
+  // ---- Zonal cards: appended after all local cards so the L1 list reads local-then-zonal ----
+  ZONAL_CARDS.forEach(function (z) {
+    if (opts.admin) { z.oracle = oracle; z.slabKm = 0; z.projKm = 0; z.projPct = 0; z.sizing = 'good'; }
+    CONTRACTS.push(z);
+  });
+
+  // ---- Zonal Adhoc bucket: vendor level, mirrors the Other-Adhoc bucket. Zonal adhoc has no
+  //      contract slab and no vehicle level, so it never sits on a contract card. ----
+  if (ZADHOC.length) {
+    var ZBID = oracle + '_Zonal_Adhoc_Trips';
+    VEHICLES[ZBID] = [];
+    TRIPS[ZBID] = ZADHOC;
+    CONTRACTS.push({
+      id: ZBID, vendor: vendorName, size: '\u2014', cluster: 'Zonal Adhoc', nveh: 0,
+      hours: '\u2014', regKm: 0, overRate: 0, duration: '\u2014', lastTrip: '\u2014',
+      tiers: [], isZonalAdhocBucket: true, isAdhocBucket: true,
+      adhocTotal: Math.round(ZADHOC_TOTAL), zonalTrips: ZADHOC.length, zonalTotal: 0
+    });
+    if (opts.admin) {
+      var _zb = CONTRACTS[CONTRACTS.length - 1];
+      _zb.oracle = oracle; _zb.slabKm = 0; _zb.projKm = 0; _zb.projPct = 0; _zb.sizing = 'good';
+    }
+  }
+
   // ---- Other Adhoc bucket: this vendor's trips whose contract_id is NOT one of their real contracts ----
-  var _orphan = myTrips.filter(function (t) { return !myContractIds[_s(t.contract_id)]; });
+  var _orphan = myTrips.filter(function (t) {
+    return !myContractIds[_s(t.contract_id)] && _low(_s(t.route_scope) || 'Local') !== 'zonal';
+  });
+  // zonal trips with no matching contract still belong in the zonal-adhoc bucket, not Other-Adhoc
+  var _zOrphan = myTrips.filter(function (t) {
+    return !myContractIds[_s(t.contract_id)] && _low(_s(t.route_scope) || 'Local') === 'zonal';
+  });
+  if (_zOrphan.length) {
+    var _zbid = oracle + '_Zonal_Adhoc_Trips';
+    var _zb2 = null;
+    for (var _i = 0; _i < CONTRACTS.length; _i++) { if (CONTRACTS[_i].id === _zbid) { _zb2 = CONTRACTS[_i]; break; } }
+    if (!_zb2) {
+      VEHICLES[_zbid] = []; TRIPS[_zbid] = [];
+      _zb2 = { id: _zbid, vendor: vendorName, size: '\u2014', cluster: 'Zonal Adhoc', nveh: 0,
+        hours: '\u2014', regKm: 0, overRate: 0, duration: '\u2014', lastTrip: '\u2014', tiers: [],
+        isZonalAdhocBucket: true, isAdhocBucket: true, adhocTotal: 0, zonalTrips: 0, zonalTotal: 0 };
+      CONTRACTS.push(_zb2);
+      if (opts.admin) { _zb2.oracle = oracle; _zb2.slabKm = 0; _zb2.projKm = 0; _zb2.projPct = 0; _zb2.sizing = 'good'; }
+    }
+    _zOrphan.forEach(function (t) {
+      var zx = _classifyTrip(t, {}, 'Adhoc');
+      TRIPS[_zbid].push({ id: _s(t.trip_id), size: _s(t.vehicle_size), veh: zx.no, vehNo: zx.no,
+        route: _buildRoute(t), billing: zx.billing, scope: 'Zonal', rfq: zx.rfqId,
+        replTag: 'default', replFor: undefined, completed: _fmtShort(t.trip_end_time),
+        km: null, amt: zx.isAdhoc ? zx.payable : null, zamt: zx.isAdhoc ? null : zx.payable,
+        rto: zx.rto ? true : undefined, status: zx.statusUi,
+        win: zx.settled ? null : _fmtWin(t.dispute_window_end), disp: dmap[_s(t.trip_id)] || null });
+      _zb2.adhocTotal += Math.round(zx.payable); _zb2.zonalTrips++;
+    });
+  }
   if (_orphan.length) {
     var BID = 'ADHOC-' + oracle;
     var oAgg = {};
     var oTrips = _orphan.map(function (t) {
-      var no = _s(t.vehicle_number);
-      var billing = _s(t.billing_type_final) || _s(t.billing_type_system) || 'Adhoc';
-      var isAdhoc = _low(billing) === 'adhoc';
-      var km = _num(t.total_trip_km);
-      var _cfb = _low(t.challan_type_final);
-      var rto = _cfb ? (_cfb.indexOf('rto') === 0) : (_low(t.challan_type).indexOf('rto') === 0);
+      var _x = _classifyTrip(t, {}, 'Adhoc');   // shared classifier; no defSet — bucket trips have no contract
+      var no = _x.no;
+      var isAdhoc = _x.isAdhoc;
+      var km = _x.km;
+      var rto = _x.rto;
       if (!oAgg[no]) oAgg[no] = { km: 0, regTrips: 0, adhocTrips: 0 };
       if (isAdhoc) oAgg[no].adhocTrips++; else { oAgg[no].regTrips++; if (!rto) oAgg[no].km += km; }
       return {
         id: _s(t.trip_id), size: _s(t.vehicle_size), veh: no, vehNo: no, route: _buildRoute(t),
-        billing: isAdhoc ? 'Adhoc' : 'Regular', replTag: 'default', replFor: undefined,
+        billing: isAdhoc ? 'Adhoc' : 'Regular', scope: _x.scope, replTag: 'default', replFor: undefined,
         completed: _fmtShort(t.trip_end_time), km: isAdhoc ? null : (rto ? 0 : km),
-        amt: isAdhoc ? _num(t.adhoc_amount) : null, rto: rto ? true : undefined,
-        status: (function (v) { return v === 'confirmed' || v === 'reconfirmed' ? 'confirmed' : (v === 'disputed' ? 'disputed' : (v === 'reconfirm' ? 'reconfirm' : 'pending')); })(_low(t.vendor_status)),
+        amt: isAdhoc ? _x.payable : null, rto: rto ? true : undefined,
+        status: _x.statusUi,
         win: _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         disp: dmap[_s(t.trip_id)] || null
       };
@@ -485,8 +651,8 @@ function _buildVendorPayload(oracle, opts) {
     });
     var adhocTotal = 0;
     _orphan.forEach(function (t) {
-      var b = _low(_s(t.billing_type_final) || _s(t.billing_type_system));
-      if (b === 'adhoc') adhocTotal += _num(t.adhoc_amount);
+      var _ox = _classifyTrip(t, {}, 'Adhoc');
+      if (_ox.isAdhoc) adhocTotal += _ox.payable;    // RTO adhoc pays 0
     });
     VEHICLES[BID] = oVeh; TRIPS[BID] = oTrips;
     CONTRACTS.push({
@@ -532,18 +698,26 @@ function _buildRoute(t) {
  * ================================================================================================*/
 
 /** Create all tabs (headers on row 1), including the 9th Access_Control tab. Safe to re-run. */
-function setupSheet() {
-  var ss = _ss();
-  var schema = {
+/* ============================ TAB SCHEMAS — single source of truth ============================
+ * setupSheet() creates tabs from this, and seedDemo() remaps its legacy row arrays onto it. Keep it
+ * in step with the live sheet: reads are by header name, so an out-of-date list here only bites when
+ * a tab is CREATED or SEEDED, which is exactly when it is hardest to notice.
+ * Zonal/local columns added 2026-08-07 — see docs/ZONAL_LOCAL_SCHEMA.md.
+ */
+var TAB_SCHEMA = {
     'Contract_Info': ['contract_id','vendor_oracle_id','vendor_name','cluster','vehicle_size','hours_slab','no_of_vehicles','total_km_slab','fixed_monthly_value','ex_km_rate','contract_start_date','contract_end_date','contract_status'],
-    'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','start_date','end_date'],
-    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','contract_id','vehicle_number','vehicle_size','trip_cluster','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
+    'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','default_vehicle_id','start_date','end_date'],
+    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
     'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
-    'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
-    'Ground_Confirmation_Log': ['log_id','row_id','trip_id','contract_id','transporter_oracle_id','trip_end_time','ground_review_deadline','sent_to_vendor_timestamp','ground_action_state','billing_before','billing_after','replaced_vehicle_before','replaced_vehicle_after','data_sent','partial_edit_flag'],
-    'Confirmation_Status_View': ['row_id','trip_id','contract_id','transporter_oracle_id','sent_to_vendor_timestamp','vendor_status','status_updated_at','dispute_id','dispute_status','reconfirm_status','dispute_window_end','final_state']
-  };
+    'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_zonal_amount','claim_rfq_id','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_route_scope','orig_rfq_id','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','orig_zonal_rfq_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_zonal_amount','resolved_rfq_id','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
+    'Ground_Confirmation_Log': ['log_id','row_id','trip_id','contract_id','transporter_oracle_id','route_scope','trip_end_time','ground_review_deadline','sent_to_vendor_timestamp','ground_action_state','billing_before','billing_after','replaced_vehicle_before','replaced_vehicle_after','data_sent','partial_edit_flag'],
+    'Confirmation_Status_View': ['row_id','trip_id','contract_id','transporter_oracle_id','route_scope','sent_to_vendor_timestamp','vendor_status','status_updated_at','dispute_id','dispute_status','reconfirm_status','dispute_window_end','final_state']
+};
+
+function setupSheet() {
+  var ss = _ss();
+  var schema = TAB_SCHEMA;
   Object.keys(schema).forEach(function (name) {
     var sh = ss.getSheetByName(name) || ss.insertSheet(name);
     var headers = schema[name];
@@ -592,7 +766,28 @@ function seedDemo() {
   // km_accumulated_flag, billing_type_system, adhoc_reason_system, replacement_flag_system, replaced_default_vehicle_system,
   // adhoc_amount, ground_confirmed, billing_type_final, replaced_default_vehicle_final, ground_review_deadline,
   // sent_to_vendor_flag, sent_to_vendor_timestamp, vendor_status, dispute_window_end, retention_month, retention_state
-  _writeRows('Trip_Level', [
+  /* seedDemo's rows below are written in the ORIGINAL 33-column Trip_Level order. The live schema is
+     now 39 columns (Vendor Name, route_scope, rfq_id, zonal_rfq_amount, zonal_rfq_amount_final,
+     Remarks were added), so they are remapped by header name here rather than left to misalign
+     silently. Add new seed values by name in _TL_SEED_DEFAULTS, never by pushing onto the array. */
+  var _TL_OLD = ['row_id','trip_id','transporter_oracle_id','contract_id','vehicle_number','vehicle_size',
+    'trip_cluster','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count',
+    'route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system',
+    'replacement_flag_system','replaced_default_vehicle_system','adhoc_amount','ground_confirmed',
+    'billing_type_final','replaced_default_vehicle_final','challan_type_final','ground_review_deadline',
+    'sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month',
+    'retention_state'];
+  var _TL_SEED_DEFAULTS = { route_scope: 'Local' };     // seed data is all local
+  function _tlRemap(rows) {
+    var target = TAB_SCHEMA['Trip_Level'];
+    return rows.map(function (r) {
+      var o = {};
+      _TL_OLD.forEach(function (h, i) { o[h] = (r[i] === undefined ? '' : r[i]); });
+      Object.keys(_TL_SEED_DEFAULTS).forEach(function (k) { o[k] = _TL_SEED_DEFAULTS[k]; });
+      return target.map(function (h) { return o[h] === undefined ? '' : o[h]; });
+    });
+  }
+  _writeRows('Trip_Level', _tlRemap([
     // ORC-4521 / Surat — transferred (regular default)
     ['r1','TR-95998983-4331','ORC-4521','SUR-4521-19186-20260701-JUL','GJ05-AB-1234','7ft','Surat','2026-07-02','2026-07-02 20:10','2026-07-02 23:53','SUS','IPS,NMP,DJT,IDF',5,'','Regular',118,'Yes','Regular','','No','',0,'No','Regular','','2026-07-03 23:53','Yes','2026-07-03 08:00','Pending','2026-08-02','2026-07','LIVE'],
     // replacement-regular (V4 GJ05-GH-3456 replacing V1 GJ05-AB-1234)
@@ -607,7 +802,7 @@ function seedDemo() {
     ['r6','TR-70000000-9999','ORC-4521','SUR-4521-19186-20260701-JUL','GJ05-CD-5678','7ft','Surat','2026-07-04','2026-07-04 18:00','2026-07-04 21:00','SUS','NMP',2,'','Regular',60,'Yes','Regular','','No','',0,'No','Regular','','2026-07-05 21:00','No','','','','2026-07','LIVE'],
     // ORC-9902 / Rajkot — the OTHER vendor (must NOT appear for ORC-4521 -> proves G6)
     ['r7','TR-40012388-1191','ORC-9902','RJK-9902-30011-20260701-JUL','GJ03-XY-1111','7ft','Rajkot','2026-07-02','2026-07-02 19:00','2026-07-02 22:14','RJS','L4E,MQP',3,'','Regular',142,'Yes','Regular','','No','',0,'No','Regular','','2026-07-03 22:14','Yes','2026-07-03 08:00','Pending','2026-08-02','2026-07','LIVE']
-  ]);
+  ]));
   SpreadsheetApp.getUi && SpreadsheetApp.getUi().alert('Demo data seeded. You are registered as ORC-4521 (' + myEmail + '). Log in to the web app to test.');
 }
 
@@ -639,6 +834,9 @@ function onOpen() {
     .addItem('7 · Stop auto-apply', 'stopSyncFromMenu')
     .addSeparator()
     .addItem('8 · Set vehicle dropdowns on Trip_Level', 'applyReplacedVehicleValidationFromMenu')
+    .addSeparator()
+    .addItem('9 · Refresh cost view + gates (all vendors)', 'refreshCostViewFromMenu')
+    .addItem('10 · Generate vendor MIS \u2192 Excel', 'generateVendorMisFromMenu')
     .addToUi();
 }
 

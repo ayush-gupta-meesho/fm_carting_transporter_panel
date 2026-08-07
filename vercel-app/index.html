@@ -123,6 +123,8 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 .badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:10px;font-weight:700;}
 .b-default{background:#E7F0FA;color:var(--navy);}
 .b-repl{background:var(--violetbg);color:var(--violet);}
+.b-zonal{background:#DFF3F2;color:#0E7C7B;}
+.cc-zline{font-size:9.5px;color:#0E7C7B;margin-top:3px;font-weight:600;}
 .b-regular{background:#E7F0FA;color:var(--blue);}
 .b-adhoc{background:var(--amberbg);color:var(--amber);}
 .b-green{background:var(--greenbg);color:var(--green);}
@@ -673,8 +675,31 @@ function renderContracts(){
   if(rows.length===0){ el.innerHTML='<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted);">'+(CONTRACTS.length?'No contracts match these filters.':'No transferred trips are available for your account yet.')+'</div>'; return; }
 
   el.innerHTML=rows.map(function(c){
+    if(c.isZonalCard){
+      var _zn=(TRIPS[c.id]||[]).length;
+      var _rfqs=(c.rfqGroups||[]);
+      return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
+        '<div class="cc-l"><div class="cc-badge" style="background:#DFF3F2;color:#0E7C7B;"><div class="ccb-sz">Zonal</div><div class="ccb-u">'+(c.size||'')+'</div></div>'+
+        '<div class="cc-info"><div class="cc-name">'+((IS_ADMIN&&c.vendor)?(c.vendor+' · '):'')+c.cluster+' · Zonal Routes</div>'+
+        '<div class="cc-meta"><span>Fixed amount per trip from the zonal RFQ</span><span>RFQs: <b>'+_rfqs.length+'</b></span><span>Duration: <b>'+c.duration+'</b></span></div>'+
+        '<div class="cc-id">'+(c.srcContract||c.id)+'</div></div></div>'+
+        '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+_zn+'</b> zonal trips</span><span style="color:#0E7C7B">'+money(c.zonalTotal||0)+'</span></div>'+
+        '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Not part of any KM slab · no vehicle-level split</div></div>'+
+        '<div class="cc-arrow">›</div></div></div>';
+    }
     if(c.isAdhocBucket){
       var _n=(TRIPS[c.id]||[]).length;
+      var _isZA=!!c.isZonalAdhocBucket;
+      if(_isZA){
+        return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
+          '<div class="cc-l"><div class="cc-badge" style="background:#DFF3F2;color:#0E7C7B;"><div class="ccb-sz">Zonal</div><div class="ccb-u">adhoc</div></div>'+
+          '<div class="cc-info"><div class="cc-name">'+((IS_ADMIN&&c.vendor)?(c.vendor+' · '):'')+'Zonal Adhoc Trips</div>'+
+          '<div class="cc-meta"><span>Zonal trips billed on amount, not on the RFQ rate</span></div>'+
+          '<div class="cc-id">'+c.id+'</div></div></div>'+
+          '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+_n+'</b> zonal adhoc trips</span><span style="color:var(--amber)">'+money(c.adhocTotal||0)+'</span></div>'+
+          '<div style="font-size:9px;color:var(--muted);margin-top:3px;">No KM slab · billed on amount</div></div>'+
+          '<div class="cc-arrow">›</div></div></div>';
+      }
       return '<div class="ccard" onclick="showL2(\''+c.id+'\')">'+
         '<div class="cc-l"><div class="cc-badge" style="background:#EFEAFB;color:#5A3FB0;"><div class="ccb-sz">Adhoc</div><div class="ccb-u">other</div></div>'+
         '<div class="cc-info"><div class="cc-name">'+((IS_ADMIN&&c.vendor)?(c.vendor+' · '):'')+'Other Adhoc Trips</div>'+
@@ -696,7 +721,9 @@ function renderContracts(){
       '<div class="cc-id">'+c.id+'</div></div></div>'+
       '<div class="cc-r"><div class="cc-prog"><div class="ccp-top"><span><b>'+c.regKm.toLocaleString('en-IN')+'</b> / '+slab.toLocaleString('en-IN')+' km</span>'+(over?'<span style="color:var(--amber)">+'+over.toLocaleString('en-IN')+' extra</span>':'')+'</div>'+
       '<div class="prog-track"><div class="prog-fill" style="width:'+baseW+'%"></div>'+(overW?'<div class="prog-over" style="width:'+overW+'%"></div>':'')+'</div>'+
-      '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Actual KM as of last completed trip · '+c.lastTrip+'</div>'+(IS_ADMIN?sizingBadge(c):'')+'</div>'+
+      '<div style="font-size:9px;color:var(--muted);margin-top:3px;">Actual KM as of last completed trip · '+c.lastTrip+'</div>'+
+      (c.zonalTrips?('<div class="cc-zline">Zonal: '+c.zonalTrips+' trip'+(c.zonalTrips>1?'s':'')+' · '+money(c.zonalTotal||0)+' — fixed per trip, outside this KM slab</div>'):'')+
+      (IS_ADMIN?sizingBadge(c):'')+'</div>'+
       '<div class="cc-arrow">›</div></div></div>';
   }).join('');
 }
@@ -717,9 +744,17 @@ function showL2(id){
   var nveh=cNVeh(c), slab=cSlabKm(c);
   var _sw=document.querySelector('#view-l2 .slab-wrap');
   var _bt=document.getElementById('breakupTable'), _bn=document.getElementById('breakupNote');
-  if(c.isAdhocBucket){
-    document.getElementById('csumTitle').textContent=c.vendor+' × Other Adhoc Trips';
-    document.getElementById('csumId').innerHTML='Unattributed adhoc trips &nbsp;·&nbsp; Total <b>'+money(c.adhocTotal||0)+'</b>';
+  if(c.isZonalCard){
+    document.getElementById('csumTitle').textContent=c.vendor+' × Zonal Routes';
+    var _rq=(c.rfqGroups||[]).map(function(g){return g.rfq+' ('+g.trips+' · '+money(g.amt)+')';}).join(' &nbsp;·&nbsp; ');
+    document.getElementById('csumId').innerHTML='Contract ID: '+(c.srcContract||c.id)+' &nbsp;·&nbsp; Total <b>'+money(c.zonalTotal||0)+'</b>'+
+      (_rq?('<div style="font-size:10px;color:#0E7C7B;margin-top:4px;">RFQ: '+_rq+'</div>'):'');
+    document.getElementById('csmVeh').textContent='—';
+    document.getElementById('csmKm').textContent='—';
+    if(_sw) _sw.style.display='none'; if(_bt) _bt.style.display='none'; if(_bn) _bn.style.display='none';
+  } else if(c.isAdhocBucket){
+    document.getElementById('csumTitle').textContent=c.vendor+' × '+(c.isZonalAdhocBucket?'Zonal Adhoc Trips':'Other Adhoc Trips');
+    document.getElementById('csumId').innerHTML=(c.isZonalAdhocBucket?'Zonal trips billed on amount':'Unattributed adhoc trips')+' &nbsp;·&nbsp; Total <b>'+money(c.adhocTotal||0)+'</b>';
     document.getElementById('csmVeh').textContent=nveh;
     document.getElementById('csmKm').textContent='—';
     if(_sw) _sw.style.display='none'; if(_bt) _bt.style.display='none'; if(_bn) _bn.style.display='none';
@@ -743,7 +778,7 @@ function showL2(id){
   document.getElementById('view-mis').classList.remove('active');
   document.getElementById('view-l2').classList.add('active');
   var _tabsBar=document.querySelector('#view-l2 .l2tabs');
-  if(c.isAdhocBucket){
+  if(c.isAdhocBucket || c.isZonalCard){
     if(_tabsBar) _tabsBar.style.display='none';   // adhoc-only: no per-vehicle KM view, trips are the whole story
     showL2Tab('trip');
   } else {
@@ -848,6 +883,7 @@ function renderMISInto(panelId, cid){
       '</div><button class="download-btn" onclick="downloadCSV()">⬇ Download</button></div>'+
     '<div class="filters">'+
       '<div class="filt"><span class="fl-lbl">Billing Type:</span><select id="f_bill" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All</option><option value="Regular">Regular</option><option value="Adhoc">Adhoc</option></select></div>'+
+      '<div class="filt"><span class="fl-lbl">Route:</span><select id="f_scope" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All</option><option value="Local">Local</option><option value="Zonal">Zonal</option></select></div>'+
       (cid?('<div class="filt"><span class="fl-lbl">Vehicle:</span><select id="f_veh" onchange="renderMISInto(\''+panelId+'\',\''+cid+'\')"><option value="all">All</option>'+(VEHICLES[cid]||[]).map(function(v){return '<option>'+v.name+'</option>';}).join('')+'</select></div>')
           :('<div class="filt"><span class="fl-lbl">Contract:</span><select id="f_contract" onchange="renderMISInto(\''+panelId+'\',\'\')"><option value="all">All</option>'+CONTRACTS.map(function(c){return '<option value="'+c.id+'">'+c.cluster+' · '+c.size+' · '+cNVeh(c)+'veh</option>';}).join('')+'</select></div>'))+
       '<div class="filt"><span class="fl-lbl">Show:</span><select id="f_rto" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All trips</option><option value="km">KM-bearing only</option><option value="rto">RTO-only (0 KM)</option></select></div>'+
@@ -881,6 +917,8 @@ function renderMISInto(panelId, cid){
   if(sub==='disputed') rows=rows.filter(function(t){return t.status==='disputed';});
   if(sub==='confirmed') rows=rows.filter(function(t){return t.status==='confirmed';});
   if(bill!=='all') rows=rows.filter(function(t){return t.billing===bill;});
+  var _scEl=panel.querySelector('#f_scope'); var scope=_scEl?_scEl.value:'all';
+  if(scope!=='all') rows=rows.filter(function(t){return (t.scope||'Local')===scope;});
   if(veh!=='all') rows=rows.filter(function(t){return t.veh===veh||t.replFor===veh;});
   if(con!=='all') rows=rows.filter(function(t){return t.cid===con;});
   if(rto==='km') rows=rows.filter(function(t){return !t.rto;});
@@ -892,13 +930,18 @@ function renderMISInto(panelId, cid){
 
   tb.innerHTML=rows.map(function(t){
     var billBadge=t.billing==='Regular'?'<span class="badge b-regular">Regular</span>':'<span class="badge b-adhoc">Adhoc</span>';
+    // route scope is a SECOND axis — both badges show together, never one instead of the other
+    if((t.scope||'Local')==='Zonal') billBadge+=' <span class="badge b-zonal">Zonal</span>';
     var replCol;
-    if(t.billing==='Adhoc'){ replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
+    if((t.scope||'Local')==='Zonal'){ replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
+    else if(t.billing==='Adhoc'){ replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
     else if(t.replTag==='repl'){ replCol='<span class="badge tag-repl-reg">Replacement Regular</span><div class="repl-for">Replacing <b>'+vehNoOf(t.cid,t.replFor)+' ('+t.replFor+')</b></div>'; }
     else { replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
     var kmCell;
-    if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not accumulated</div>';
-    else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span><div style="font-size:9.5px;color:var(--muted);">adhoc amount</div>';
+    // ONE RTO RULE: an RTO trip pays nothing, whatever its scope or billing type.
+    if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not accumulated · not payable</div>';
+    else if((t.scope||'Local')==='Zonal' && t.billing==='Regular') kmCell='<span class="adhoc-amt" style="color:#0E7C7B;">'+money(t.zamt||0)+'</span><div style="font-size:9.5px;color:var(--muted);">zonal RFQ'+(t.rfq?' · '+t.rfq:'')+'</div>';
+    else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span><div style="font-size:9.5px;color:var(--muted);">adhoc amount'+(((t.scope||'Local')==='Zonal'&&t.rfq)?' · '+t.rfq:'')+'</div>';
     else kmCell='<span class="km-cell"><b>'+t.km+'</b> km</span>';
     var statusCell;
     if(t.status==='confirmed') statusCell='<div class="st-confirmed">✓ Confirmed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'');
@@ -941,18 +984,20 @@ function statusLabel(s){
   return 'Pending Confirmation';
 }
 function downloadCSV(){
-  var headers=['Contract ID','Cluster','Vehicle Size','Contract Hours','Trip ID','Trip Vehicle Size','Vehicle No','Vehicle Tag','Original Vehicle (if replacement)','Actual Route','Billing Type','Replacement Tag','Completed Time','KM','Adhoc Amount (INR)','KM Accumulated','Trip Status','Dispute Window'];
+  var headers=['Contract ID','Cluster','Vehicle Size','Contract Hours','Trip ID','Trip Vehicle Size','Vehicle No','Vehicle Tag','Original Vehicle (if replacement)','Actual Route','Route Scope','RFQ ID','Billing Type','Replacement Tag','Completed Time','KM','Adhoc Amount (INR)','Zonal Amount (INR)','KM Accumulated','Trip Status','Dispute Window'];
   var rows=[headers];
   CONTRACTS.forEach(function(c){
     (TRIPS[c.id]||[]).forEach(function(t){
       var replTag=t.billing==='Adhoc'?'':(t.replTag==='repl'?'Replacement Regular':'');
       var origVeh=(t.billing!=='Adhoc'&&t.replTag==='repl')?(vehNoOf(c.id,t.replFor)+' ('+t.replFor+')'):'';
-      var km=(t.billing==='Regular'&&!t.rto)?t.km:'';
-      var amt=t.billing==='Adhoc'?t.amt:'';
-      var kmAccum=t.rto?'No (RTO)':(t.billing==='Regular'?'Yes':'N/A (Adhoc)');
+      var _sc=t.scope||'Local';
+      var km=(_sc==='Local'&&t.billing==='Regular'&&!t.rto)?t.km:'';
+      var amt=t.billing==='Adhoc'?t.amt:'';                       // already 0 when RTO
+      var zamt=(_sc==='Zonal'&&t.billing==='Regular')?(t.zamt||0):'';
+      var kmAccum=t.rto?'No (RTO)':(_sc==='Zonal'?'No (Zonal)':(t.billing==='Regular'?'Yes':'N/A (Adhoc)'));
       var tagV=(VEHICLES[c.id]||[]).find(function(v){return v.name===t.veh;});
-      rows.push([c.id,c.cluster,c.size,c.hours,t.id,t.size,t.vehNo,(tagV?tagV.tag:''),origVeh,
-        (t.route||[]).join(' > '),t.billing,replTag,t.completed,km,amt,kmAccum,statusLabel(t.status),t.win||'']);
+      rows.push([(c.srcContract||c.id),c.cluster,c.size,c.hours,t.id,t.size,t.vehNo,(tagV?tagV.tag:''),origVeh,
+        (t.route||[]).join(' > '),_sc,(t.rfq||''),t.billing,replTag,t.completed,km,amt,zamt,kmAccum,statusLabel(t.status),t.win||'']);
     });
   });
   var csv=rows.map(function(r){ return r.map(function(cell){ var s=String(cell==null?'':cell); return (s.indexOf(',')>-1||s.indexOf('"')>-1||s.indexOf('\n')>-1)?'"'+s.replace(/"/g,'""')+'"':s; }).join(','); }).join('\n');

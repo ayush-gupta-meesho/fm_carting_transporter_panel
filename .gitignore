@@ -13,3 +13,8 @@ node_modules/
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Billing MIS sample output — contains REAL vendor payables, plate numbers and vendor names.
+# Kept in the repo folder so every output lives in one place, but NOT pushed to GitHub.
+# Delete this line if you want it committed.
+mockups/FM_Carting_Billing_MIS_prototype.xlsx
