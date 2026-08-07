@@ -122,7 +122,7 @@ function applyConfirm(a) {
     var isReconf = (vs === 'reconfirm');                                          // accepting a resolved correction
     var newStatus = isReconf ? 'Reconfirmed' : 'Confirmed';
     _upsertStatusView({
-      row_id: rv[ctx.idx['row_id']], trip_id: tid, contract_id: rv[ctx.idx['contract_id']],
+      row_id: rv[ctx.idx['row_id']], trip_id: tid, contract_id: _billRef(ctx, ri),
       transporter_oracle_id: a.oracle, route_scope: _s(rv[ctx.idx['route_scope']]) || 'Local',
       sent_to_vendor_timestamp: rv[ctx.idx['sent_to_vendor_timestamp']],
       vendor_status: newStatus, dispute_window_end: rv[ctx.idx['dispute_window_end']],
@@ -135,6 +135,22 @@ function applyConfirm(a) {
 }
 
 /** Raise a dispute for one trip. Returns 1 if a dispute row was created, else 0. */
+/* ===================== THE BILLING REFERENCE OF A ROW =====================
+ * A local trip is referenced by contract_id. A zonal trip has no contract_id at all — its rfq_id IS its
+ * contract reference (decision 2026-08-07). Every log tab writes this one value into its contract_id
+ * column, with route_scope alongside so ops can tell the two apart. One helper, so the three log tabs
+ * and both resolution appliers cannot drift.
+ */
+function _billRef(ctx, ri) {
+  var rv = ctx.values[ri];
+  var scope = _low(_s(rv[ctx.idx['route_scope']]) || 'Local');
+  if (scope === 'zonal') return _s(rv[ctx.idx['rfq_id']]) || '(no RFQ id)';
+  return _s(rv[ctx.idx['contract_id']]);
+}
+function _isZonalRow(ctx, ri) {
+  return _low(_s(ctx.values[ri][ctx.idx['route_scope']]) || 'Local') === 'zonal';
+}
+
 function applyDispute(a) {
   var ctx = _ctx(TABS.tripLevel, 'trip_id');
   var ri = _findRowIndex(ctx, 'trip_id', a.trip_id);
@@ -158,7 +174,7 @@ function applyDispute(a) {
 
   _appendByHeaders(LOG_TABS.disputes, 'dispute_id', {
     // green (panel submit)
-    dispute_id: disputeId, row_id: g('row_id'), trip_id: a.trip_id, contract_id: g('contract_id'),
+    dispute_id: disputeId, row_id: g('row_id'), trip_id: a.trip_id, contract_id: _billRef(ctx, ri),
     transporter_oracle_id: a.oracle, vendor_name: _s(a.vendor_name), raised_at: _nowIso(),
     categories: (a.categories || []).join('|'),
     claim_billing_type: _s(a.claim_billing_type), claim_aggregate_vehicle: _s(a.claim_aggregate_vehicle),
@@ -183,7 +199,7 @@ function applyDispute(a) {
   });
 
   _upsertStatusView({
-    row_id: g('row_id'), trip_id: a.trip_id, contract_id: g('contract_id'), transporter_oracle_id: a.oracle,
+    row_id: g('row_id'), trip_id: a.trip_id, contract_id: _billRef(ctx, ri), transporter_oracle_id: a.oracle,
     route_scope: g('route_scope') || 'Local',
     sent_to_vendor_timestamp: g('sent_to_vendor_timestamp'), vendor_status: 'Disputed',
     dispute_id: disputeId, dispute_status: 'Open', dispute_window_end: g('dispute_window_end'),
@@ -273,7 +289,7 @@ function transferReadyTrips() {
     var _actionState = _zonalEdit ? 'ZONAL_NOT_EDITABLE'
       : (_flagAttr ? 'NEEDS_ATTRIBUTION_FIX' : (groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION'));
     var _dataSent = _zonalEdit
-      ? ('ZONAL_NOT_EDITABLE: route_scope=Zonal on ' + _cid + ' \u2014 billing type and replacement vehicle are system outcomes on zonal trips and were cleared. Fix the classification in the data engine, not in the sheet.')
+      ? ('ZONAL_NOT_EDITABLE: route_scope=Zonal on RFQ ' + (_s(rv[ctx.idx['rfq_id']]) || '(no RFQ id)') + ' \u2014 a zonal trip has no contract_id; billing type and replacement vehicle are system outcomes on zonal and were cleared. Fix the classification in the data engine, not in the sheet.')
       : (_flagAttr
         ? ('ATTRIBUTION_FIX: Regular set on ' + _cid + (_home ? (' \u2014 vehicle ' + _vno + ' is a default of ' + _home + '; set contract_id to it') : ' \u2014 vehicle is not a default of any contract'))
         : (_partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL')));
@@ -282,7 +298,7 @@ function transferReadyTrips() {
     _appendByHeaders(LOG_TABS.ground, 'log_id', {
       log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + i,
       row_id: _s(rv[ctx.idx['row_id']]), trip_id: _s(rv[ctx.idx['trip_id']]),
-      contract_id: _s(rv[ctx.idx['contract_id']]), transporter_oracle_id: _s(rv[ctx.idx['transporter_oracle_id']]),
+      contract_id: _billRef(ctx, i), transporter_oracle_id: _s(rv[ctx.idx['transporter_oracle_id']]),
       route_scope: _scope,
       trip_end_time: _s(rv[ctx.idx['trip_end_time']]), ground_review_deadline: iso(dl),
       sent_to_vendor_timestamp: ts,
@@ -386,11 +402,13 @@ function _applyResolvedRows(rows) {
         ow('adhoc_amount', get(r, 'resolved_amount'));
         ow('replaced_default_vehicle_final', get(r, 'resolved_aggregate_vehicle'));
       }
-      ow('contract_id', get(r, 'resolved_contract_id'));
+      // the billing reference: contract_id on local, rfq_id on zonal (a zonal row has no contract_id)
+      if (_rz) ow('rfq_id', get(r, 'resolved_rfq_id'));
+      else        ow('contract_id', get(r, 'resolved_contract_id'));
       _setCell(tl, tr, 'vendor_status', 'Reconfirm');   // re-surface to vendor
       _upsertStatusView({
         row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
-        contract_id: _s(tl.values[tr][tl.idx['contract_id']]),
+        contract_id: _billRef(tl, tr),
         transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
         route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
         vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
@@ -445,11 +463,13 @@ function applyResolutionsFromSheet() {
       ow('adhoc_amount', val(i, 'resolved_amount'));
       ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));
     }
-    ow('contract_id', val(i, 'resolved_contract_id'));
+    // the billing reference: contract_id on local, rfq_id on zonal (a zonal row has no contract_id)
+    if (_rz2) ow('rfq_id', val(i, 'resolved_rfq_id'));
+    else        ow('contract_id', val(i, 'resolved_contract_id'));
     _setCell(tl, tr, 'vendor_status', 'Reconfirm');                        // re-surface to vendor
     _upsertStatusView({
       row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
-      contract_id: _s(tl.values[tr][tl.idx['contract_id']]),
+      contract_id: _billRef(tl, tr),
       transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
       route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
       vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',

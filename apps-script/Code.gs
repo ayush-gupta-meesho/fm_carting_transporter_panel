@@ -105,6 +105,26 @@ function _fmtWin(v) {
   return Utilities.formatDate(d, _tz(), 'd MMM yy');
 }
 // "15 Jul – 31 Jul 2026"
+/* ===================== ZONAL IDENTITY =====================
+ * A zonal trip has no contract_id. Its rfq_id is its contract reference, so the panel card id is
+ * ZONAL_PREFIX + rfq_id and the MIS keys its zonal lines on the same string. Both live here so the
+ * panel and Billing.gs cannot drift.
+ */
+var ZONAL_PREFIX = 'ZONAL::';
+var NO_RFQ_KEY   = '(no RFQ id)';        // zonal Regular with a blank rfq_id: still visible, still gated
+function _zonalCardId(rfq) { return ZONAL_PREFIX + (_s(rfq) || NO_RFQ_KEY); }
+function _zonalRfqOf(cardId) {           // 'ZONAL::FM-Zonal-x' -> 'FM-Zonal-x'; anything else -> ''
+  var s = _s(cardId);
+  return s.indexOf(ZONAL_PREFIX) === 0 ? s.slice(ZONAL_PREFIX.length) : '';
+}
+/* most frequent key in a {key: count} map. Used to derive a zonal card's cluster and vehicle size from
+   its own trips, since by decision there is no RFQ master tab to read them from. */
+function _modeKey(o) {
+  var best = '', n = -1;
+  Object.keys(o || {}).forEach(function (k) { if (o[k] > n) { n = o[k]; best = k; } });
+  return best;
+}
+
 function _fmtRange(a, b) {
   var da = _toDate(a), db = _toDate(b);
   if (!da || !db) return (_s(a) + (_s(b) ? ' – ' + _s(b) : ''));
@@ -266,11 +286,16 @@ function _buildDisputeMap(oracle) {
       categories: _s(d.categories) ? _s(d.categories).split('|') : [],
       claim_billing_type: _s(d.claim_billing_type), claim_aggregate_vehicle: _s(d.claim_aggregate_vehicle),
       claim_km: _s(d.claim_km), claim_amount: _s(d.claim_amount), claim_contract_id: _s(d.claim_contract_id),
+      // zonal claims — without these the View-Dispute dialog cannot render a zonal dispute at all
+      claim_zonal_amount: _s(d.claim_zonal_amount), claim_rfq_id: _s(d.claim_rfq_id),
       description: _s(d.vendor_description), callback: _s(d.callback_number), proof_url: _s(d.proof_url),
       status: _s(d.dispute_status), reconfirm_status: _s(d.reconfirm_status),
       orig_billing_type: _s(d.orig_billing_type), orig_total_km: _s(d.orig_total_km), orig_adhoc_amount: _s(d.orig_adhoc_amount),
+      orig_route_scope: _s(d.orig_route_scope), orig_rfq_id: _s(d.orig_rfq_id),
+      orig_zonal_rfq_amount: _s(d.orig_zonal_rfq_amount),
       resolution_note: _s(d.resolution_note), resolved_billing_type: _s(d.resolved_billing_type),
       resolved_km: _s(d.resolved_km), resolved_amount: _s(d.resolved_amount),
+      resolved_zonal_amount: _s(d.resolved_zonal_amount), resolved_rfq_id: _s(d.resolved_rfq_id),
       resolved_aggregate_vehicle: _s(d.resolved_aggregate_vehicle), resolved_contract_id: _s(d.resolved_contract_id),
       resolved_by: _s(d.resolved_by), resolved_at: _s(d.resolved_at) ? _fmtShort(d.resolved_at) : ''
     };
@@ -330,6 +355,10 @@ function _classifyTrip(t, defSet, defaultBilling) {
     scope:     isZonal ? 'Zonal' : 'Local',
     isZonal:   isZonal,
     rfqId:     _s(t.rfq_id),
+    /* ref = the trip's OWN billing reference: contract_id on local, rfq_id on zonal. Same rule as
+       _billRef() in Actions.gs, so a panel row, a log row and an MIS line all name a trip identically.
+       Needed because a bucket card holds trips from several different references. */
+    ref:       isZonal ? (_s(t.rfq_id) || NO_RFQ_KEY) : _s(t.contract_id),
     billing:   isAdhoc ? 'Adhoc' : 'Regular',
     isAdhoc:   isAdhoc,
     km:        km,
@@ -372,14 +401,22 @@ function _buildVendorPayload(oracle, opts) {
     (vehiclesByContract[cid] = vehiclesByContract[cid] || []).push(v);
   });
 
-  var tripsByContract = {};
+  /* ---- Split the two axes BEFORE anything else.
+     A zonal trip has no contract_id — its rfq_id IS its contract reference (decision 2026-08-07).
+     So zonal never enters tripsByContract and is never touched by the per-contract loop below. ---- */
+  var zonalAll = [], localAll = [];
   myTrips.forEach(function (t) {
+    if (_low(_s(t.route_scope) || 'Local') === 'zonal') zonalAll.push(t); else localAll.push(t);
+  });
+
+  var tripsByContract = {};
+  localAll.forEach(function (t) {
     var cid = _s(t.contract_id);
     (tripsByContract[cid] = tripsByContract[cid] || []).push(t);
   });
 
   var CONTRACTS = [], VEHICLES = {}, TRIPS = {};
-  var ZONAL_CARDS = [], ZADHOC = [], ZADHOC_TOTAL = 0, _zonalByContract = {};
+  var ZADHOC = [], ZADHOC_TOTAL = 0;
   var vendorName = myContracts.length ? _s(myContracts[0].vendor_name) : '';
   var clusters = {}, mtdKm = 0;
 
@@ -395,14 +432,8 @@ function _buildVendorPayload(oracle, opts) {
     var vehDates = {};  // vehicle_number -> {start,end}  (per-vehicle active period; subset of contract period)
     defaults.forEach(function (v) { vehDates[_s(v.vehicle_number)] = { start: _s(v.start_date), end: _s(v.end_date) }; });
 
-    var _all = tripsByContract[cid] || [];
-    // Zonal is a second axis: it never enters the slab, a vehicle row or a utilisation %, so it is
-    // separated out here and rendered as its own card. Zonal ADHOC goes to the vendor-level bucket.
-    var cTrips = [], zTrips = [];
-    _all.forEach(function (t) {
-      var sc = _low(_s(t.route_scope) || 'Local');
-      if (sc === 'zonal') { zTrips.push(t); } else { cTrips.push(t); }
-    });
+    // tripsByContract holds LOCAL trips only — zonal is keyed on rfq_id and built after this loop.
+    var cTrips = tripsByContract[cid] || [];
 
     // replacement vehicles = trip vehicle_numbers not in defaults, in first-appearance order
     var nextIdx = defaults.length;
@@ -466,6 +497,7 @@ function _buildVendorPayload(oracle, opts) {
         route:     route,
         billing:   isAdhoc ? 'Adhoc' : 'Regular',
         scope:     _x.scope,
+        ref:       _x.ref,
         replTag:   (!isAdhoc && isRepl) ? 'repl' : 'default',
         replFor:   (!isAdhoc && isRepl) ? (labelOf[replForNo] || replForNo) : undefined,
         completed: _fmtShort(t.trip_end_time),
@@ -505,45 +537,6 @@ function _buildVendorPayload(oracle, opts) {
     VEHICLES[cid] = vehList;
     TRIPS[cid] = mappedTrips;
 
-    /* ---- ZONAL: one card per contract_id, Regular only. No vehicle level exists for zonal, so the
-       card carries an empty VEHICLES list and the panel lands straight on the Trip tab. Zonal ADHOC
-       is pulled out to the vendor-level <oracle>_Zonal_Adhoc_Trips bucket. ---- */
-    var zReg = [], zTotal = 0, zRfq = {}, zRfqOrder = [];
-    zTrips.forEach(function (t) {
-      var zx = _classifyTrip(t, defSet, 'Regular');
-      var mapped = {
-        id: _s(t.trip_id), size: _s(t.vehicle_size) || _s(c.vehicle_size),
-        veh: zx.no, vehNo: zx.no, route: _buildRoute(t),
-        billing: zx.billing, scope: 'Zonal', rfq: zx.rfqId,
-        replTag: 'default', replFor: undefined,
-        completed: _fmtShort(t.trip_end_time),
-        km: null, amt: null, zamt: zx.payable,
-        rto: zx.rto ? true : undefined,
-        status: zx.statusUi,
-        win: zx.settled ? null : _fmtWin(t.dispute_window_end),
-        disp: dmap[_s(t.trip_id)] || null
-      };
-      if (zx.isAdhoc) { mapped.amt = zx.payable; mapped.zamt = null; ZADHOC.push(mapped); ZADHOC_TOTAL += zx.payable; return; }
-      zReg.push(mapped); zTotal += zx.payable;
-      var k = zx.rfqId || '(no RFQ id)';
-      if (!zRfq[k]) { zRfq[k] = { rfq: k, trips: 0, amt: 0 }; zRfqOrder.push(k); }
-      zRfq[k].trips++; zRfq[k].amt += zx.payable;
-    });
-    if (zReg.length) {
-      var ZID = cid + '::ZONAL';
-      VEHICLES[ZID] = [];                                  // no vehicle level for zonal
-      TRIPS[ZID] = zReg;
-      ZONAL_CARDS.push({
-        id: ZID, srcContract: cid, vendor: vendorName, size: _s(c.vehicle_size),
-        cluster: _s(c.cluster), nveh: 0, hours: '\u2014', regKm: 0, overRate: 0,
-        duration: _fmtRange(c.contract_start_date, c.contract_end_date),
-        lastTrip: '\u2014', tiers: [], isZonalCard: true,
-        zonalTotal: Math.round(zTotal), zonalTrips: zReg.length,
-        rfqGroups: zRfqOrder.map(function (k) { return zRfq[k]; })
-      });
-    }
-    _zonalByContract[cid] = { trips: zReg.length, total: Math.round(zTotal) };
-
     if (_s(c.cluster)) clusters[_s(c.cluster)] = true;
     mtdKm += contractRegKm;
 
@@ -569,10 +562,60 @@ function _buildVendorPayload(oracle, opts) {
     }
   });
 
-  // ---- Zonal cards: appended after all local cards so the L1 list reads local-then-zonal ----
-  ZONAL_CARDS.forEach(function (z) {
-    if (opts.admin) { z.oracle = oracle; z.slabKm = 0; z.projKm = 0; z.projPct = 0; z.sizing = 'good'; }
-    CONTRACTS.push(z);
+  /* ══════════════════ ZONAL: ONE CARD PER rfq_id ══════════════════
+     A zonal trip carries no contract_id — the rfq_id IS its contract reference. So zonal is grouped
+     by rfq_id at VENDOR level (vendor comes from transporter_oracle_id on the trip row, which every
+     row has), never by contract. Cluster, vehicle size, period and last-trip date are derived from the
+     trips themselves; there is deliberately no RFQ master tab (decision 2026-08-07).
+     Zonal ADHOC still goes to the vendor-level <oracle>_Zonal_Adhoc_Trips bucket — an adhoc trip is
+     billed on its amount, not on an RFQ rate, so it does not belong to an RFQ card. ---- */
+  var _zG = {}, _zOrder = [];
+  zonalAll.forEach(function (t) {
+    var zx = _classifyTrip(t, {}, 'Regular');          // no defSet: zonal has no default-vehicle notion
+    var mapped = {
+      id: _s(t.trip_id), size: _s(t.vehicle_size),
+      veh: zx.no, vehNo: zx.no, route: _buildRoute(t),
+      billing: zx.billing, scope: 'Zonal', rfq: zx.rfqId, ref: zx.ref,
+      replTag: 'default', replFor: undefined,
+      completed: _fmtShort(t.trip_end_time),
+      km: null, amt: null, zamt: zx.payable,
+      rto: zx.rto ? true : undefined,
+      status: zx.statusUi,
+      win: zx.settled ? null : _fmtWin(t.dispute_window_end),
+      disp: dmap[_s(t.trip_id)] || null
+    };
+    if (zx.isAdhoc) {
+      mapped.amt = zx.payable; mapped.zamt = null;
+      ZADHOC.push(mapped); ZADHOC_TOTAL += zx.payable;
+      return;
+    }
+    var k = zx.rfqId || NO_RFQ_KEY;
+    if (!_zG[k]) { _zG[k] = { rfq: k, trips: [], total: 0, clusters: {}, sizes: {}, minD: null, maxD: null }; _zOrder.push(k); }
+    var g = _zG[k];
+    g.trips.push(mapped); g.total += zx.payable;
+    var _cl = _s(t.trip_cluster); if (_cl) g.clusters[_cl] = (g.clusters[_cl] || 0) + 1;
+    var _sz = _s(t.vehicle_size);  if (_sz) g.sizes[_sz]   = (g.sizes[_sz]   || 0) + 1;
+    var _d = _toDate(t.trip_date) || _toDate(t.trip_end_time);
+    if (_d) { if (!g.minD || _d < g.minD) g.minD = _d; if (!g.maxD || _d > g.maxD) g.maxD = _d; }
+  });
+  _zOrder.sort();                                       // stable, readable RFQ order on the L1 list
+  _zOrder.forEach(function (k) {
+    var g = _zG[k];
+    var ZID = _zonalCardId(k);                         // internal id; _cidLabel() strips the prefix
+    VEHICLES[ZID] = [];                                 // no vehicle level for zonal
+    TRIPS[ZID] = g.trips;
+    var card = {
+      id: ZID, rfqId: k, srcContract: k,                // srcContract === the RFQ id: it IS the contract ref
+      vendor: vendorName, size: _modeKey(g.sizes) || '—', cluster: _modeKey(g.clusters) || 'Zonal',
+      nveh: 0, hours: '—', regKm: 0, overRate: 0,
+      duration: (g.minD && g.maxD) ? _fmtRange(g.minD, g.maxD) : '—',
+      lastTrip: g.maxD ? _fmtLong(g.maxD) : '—',
+      tiers: [], isZonalCard: true,
+      zonalTotal: Math.round(g.total), zonalTrips: g.trips.length,
+      rfqGroups: [{ rfq: k, trips: g.trips.length, amt: Math.round(g.total) }]
+    };
+    if (opts.admin) { card.oracle = oracle; card.slabKm = 0; card.projKm = 0; card.projPct = 0; card.sizing = 'good'; }
+    CONTRACTS.push(card);
   });
 
   // ---- Zonal Adhoc bucket: vendor level, mirrors the Other-Adhoc bucket. Zonal adhoc has no
@@ -594,36 +637,7 @@ function _buildVendorPayload(oracle, opts) {
   }
 
   // ---- Other Adhoc bucket: this vendor's trips whose contract_id is NOT one of their real contracts ----
-  var _orphan = myTrips.filter(function (t) {
-    return !myContractIds[_s(t.contract_id)] && _low(_s(t.route_scope) || 'Local') !== 'zonal';
-  });
-  // zonal trips with no matching contract still belong in the zonal-adhoc bucket, not Other-Adhoc
-  var _zOrphan = myTrips.filter(function (t) {
-    return !myContractIds[_s(t.contract_id)] && _low(_s(t.route_scope) || 'Local') === 'zonal';
-  });
-  if (_zOrphan.length) {
-    var _zbid = oracle + '_Zonal_Adhoc_Trips';
-    var _zb2 = null;
-    for (var _i = 0; _i < CONTRACTS.length; _i++) { if (CONTRACTS[_i].id === _zbid) { _zb2 = CONTRACTS[_i]; break; } }
-    if (!_zb2) {
-      VEHICLES[_zbid] = []; TRIPS[_zbid] = [];
-      _zb2 = { id: _zbid, vendor: vendorName, size: '\u2014', cluster: 'Zonal Adhoc', nveh: 0,
-        hours: '\u2014', regKm: 0, overRate: 0, duration: '\u2014', lastTrip: '\u2014', tiers: [],
-        isZonalAdhocBucket: true, isAdhocBucket: true, adhocTotal: 0, zonalTrips: 0, zonalTotal: 0 };
-      CONTRACTS.push(_zb2);
-      if (opts.admin) { _zb2.oracle = oracle; _zb2.slabKm = 0; _zb2.projKm = 0; _zb2.projPct = 0; _zb2.sizing = 'good'; }
-    }
-    _zOrphan.forEach(function (t) {
-      var zx = _classifyTrip(t, {}, 'Adhoc');
-      TRIPS[_zbid].push({ id: _s(t.trip_id), size: _s(t.vehicle_size), veh: zx.no, vehNo: zx.no,
-        route: _buildRoute(t), billing: zx.billing, scope: 'Zonal', rfq: zx.rfqId,
-        replTag: 'default', replFor: undefined, completed: _fmtShort(t.trip_end_time),
-        km: null, amt: zx.isAdhoc ? zx.payable : null, zamt: zx.isAdhoc ? null : zx.payable,
-        rto: zx.rto ? true : undefined, status: zx.statusUi,
-        win: zx.settled ? null : _fmtWin(t.dispute_window_end), disp: dmap[_s(t.trip_id)] || null });
-      _zb2.adhocTotal += Math.round(zx.payable); _zb2.zonalTrips++;
-    });
-  }
+  var _orphan = localAll.filter(function (t) { return !myContractIds[_s(t.contract_id)]; });
   if (_orphan.length) {
     var BID = 'ADHOC-' + oracle;
     var oAgg = {};
@@ -637,7 +651,8 @@ function _buildVendorPayload(oracle, opts) {
       if (isAdhoc) oAgg[no].adhocTrips++; else { oAgg[no].regTrips++; if (!rto) oAgg[no].km += km; }
       return {
         id: _s(t.trip_id), size: _s(t.vehicle_size), veh: no, vehNo: no, route: _buildRoute(t),
-        billing: isAdhoc ? 'Adhoc' : 'Regular', scope: _x.scope, replTag: 'default', replFor: undefined,
+        billing: isAdhoc ? 'Adhoc' : 'Regular', scope: _x.scope, ref: _x.ref,
+        replTag: 'default', replFor: undefined,
         completed: _fmtShort(t.trip_end_time), km: isAdhoc ? null : (rto ? 0 : km),
         amt: isAdhoc ? _x.payable : null, rto: rto ? true : undefined,
         status: _x.statusUi,

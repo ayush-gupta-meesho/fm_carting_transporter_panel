@@ -1,10 +1,46 @@
 # Zonal / Local route scope — schema and rules
 
-**Status: agreed 2026-08-07, not yet built.** Decisions 1–8 confirmed by Ayush. This document is the
-contract between the data engine, the Apps Script backend, the Vercel panel and the Billing MIS.
+**Status: built and verified 2026-08-07.** Decisions 1–8 confirmed by Ayush, plus the identity
+amendment in §0 (a zonal trip has no `contract_id`). This document is the contract between the data
+engine, the Apps Script backend, the Vercel panel and the Billing MIS.
+
+Verified by `testkit/_uitest.js` (153 assertions, real browser) and `testkit/_billtest.js`
+(22 assertions, real Billing.gs vs an independent sum). Run both before any push.
 
 Route scope is a **second axis alongside Regular/Adhoc**, not a third billing type. Every trip has
 both a `route_scope` and a `billing_type`.
+
+---
+
+## 0. The identity rule — a zonal trip has no `contract_id`
+
+**Amended 2026-08-07.** A zonal trip does not belong to a carting contract at all, so the engine leaves
+`contract_id` blank. **`rfq_id` is the contract reference for a zonal trip.** Everything downstream keys
+on that:
+
+| | Local | Zonal |
+|---|---|---|
+| Billing reference | `contract_id` | **`rfq_id`** |
+| Vendor attribution | `contract_id` → `Contract_Info` | **`transporter_oracle_id` on the trip row** |
+| Panel card | one per `contract_id` | **one per `rfq_id`**, internal id `ZONAL::<rfq_id>` |
+| Cluster / size / period | `Contract_Info` | **derived from the card's own trips** (no RFQ master tab) |
+| KM slab, vehicle rows, utilisation % | yes | never |
+| MIS Summary | one line per contract | **one line per `rfq_id` + a Zonal subtotal** |
+| Log tabs (`contract_id` column) | `contract_id` | `rfq_id` — written by `_billRef()`, with `route_scope` alongside |
+
+Two consequences worth stating plainly:
+
+1. **There is no RFQ master tab.** Cluster, vehicle size, period and last-trip date are the mode / min /
+   max of the card's own trips, and the amount is whatever `zonal_rfq_amount` says. Nothing validates a
+   trip's amount against a contracted RFQ rate — that is a conscious trade for zero ops overhead, and the
+   place to revisit if amounts start drifting.
+2. **A blank `rfq_id` on a zonal trip is now a data problem, not a cosmetic one** — it is the contract
+   reference. Such trips still bill (the engine set the amount) but group under `(no RFQ id)` and raise a
+   `WARN` gate in the MIS. They are never dropped.
+
+If the engine *does* stamp a `contract_id` on a zonal row, it is ignored for grouping and billing. The
+`route_scope != Zonal` filter in `_misBuildContracts` is belt-and-braces so such a row still cannot reach
+a slab, a vehicle row or a utilisation %.
 
 ---
 
@@ -19,7 +55,7 @@ placed for readability, and nothing breaks by inserting mid-table.
 | Position | Column | Type | Written by | Values / notes |
 |---|---|---|---|---|
 | 9 (after `trip_cluster`) | `route_scope` | varchar | **engine (system)** | `Local` \| `Zonal`. Blank reads as `Local`. |
-| 10 | `rfq_id` | varchar | **engine (system)** | the zonal RFQ this trip billed against. Blank for Local. |
+| 10 | `rfq_id` | varchar | **engine (system)** | the zonal RFQ this trip billed against. Blank for Local. **On a zonal trip this is the contract reference — see §0.** |
 | 25 (after `replaced_default_vehicle_system`) | `zonal_rfq_amount` | decimal | **engine (system)** | fixed payable for a Zonal + Regular trip. Blank/0 for Local. |
 | 31 (after `challan_type_final`) | `zonal_rfq_amount_final` | decimal | **dispute resolution only** | written by the resolution appliers when an amount dispute is upheld. Ground can never type here. |
 
@@ -46,7 +82,7 @@ Vendors can dispute billing type, amount and RFQ (decision 5), and the panel mus
 | `orig_rfq_id` | varchar | snapshot |
 | `orig_zonal_rfq_amount` | decimal | snapshot — without this the dispute card cannot show the before-value |
 | `resolved_zonal_amount` | decimal | ground's answer → applied to `Trip_Level.zonal_rfq_amount_final` |
-| `resolved_rfq_id` | varchar | ground's answer, audit only |
+| `resolved_rfq_id` | varchar | ground's answer → applied to `Trip_Level.rfq_id` on a zonal row (it is the billing reference; see §0) |
 
 New `categories` values (no schema change): **`Wrong zonal amount`**, **`Wrong RFQ`**.
 
@@ -132,10 +168,11 @@ kmToSlab = !isZonal && !isAdhoc && !rto
 
 ## 5. Panel layout
 
-Zonal trips carry a `contract_id`, so they get their **own card per contract**, separate from that
-contract's local card:
+Zonal trips get **one card per `rfq_id`**, built at vendor level, alongside (not inside) the local
+contract cards:
 
-- **Card label** — `<contract_id> · Zonal`, with a teal badge. Internal id `<contract_id>::ZONAL`.
+- **Card label** — `<cluster> · <size> · Zonal · <rfq_id>`, with a teal badge. Internal id
+  `ZONAL::<rfq_id>`; the id line reads `RFQ ID: <rfq_id>`.
 - **L2 lands straight on the Trip tab; the Vehicle tab is hidden.** There is no vehicle-level
   definition for zonal. This reuses the existing `isAdhocBucket` mechanism, so it is a flag, not new
   navigation code.
@@ -147,6 +184,38 @@ contract's local card:
   the KM slab."*
 - Vendors can confirm and dispute zonal trips exactly as they do local ones, with the two new dispute
   categories available.
+
+### 5.1 Card naming — the RFQ id carries the name
+
+Because the RFQ id *is* the contract reference, it carries the card name:
+`<cluster> · <size> · Zonal · <rfq_id>`. Cluster and size are there for human orientation and come from
+the card's own trips. The meta line reads Cluster / Vehicle Size / Trips / Period, and the id line reads
+`RFQ ID: <rfq_id>` with a tooltip explaining that a zonal trip has no contract ID.
+
+This also settles the earlier collision — two zonal cards in one cluster used to read identically
+("Rajkot · Zonal Routes" twice) because they were keyed on contracts that were not in the name. Keyed on
+the RFQ, they cannot collide: the key is in the label.
+
+The internal id `ZONAL::<rfq_id>` (and the pre-amendment `<contract>::ZONAL`) is **never shown to a
+vendor** — `_cidLabel()` strips both from the card id line, the L2 title, the Contract pill in the global
+Trip MIS, the dispute modal header and the CSV export.
+
+### 5.2 The dispute modal is scope-aware
+
+A zonal trip carries no KM and no vehicle-level split, so the local modal rendered `Current KM: null km`
+on it. The category set and every panel now switch on scope:
+
+| | Local | Zonal |
+|---|---|---|
+| Category 2 | `Wrong KM / Amount` → `claim_km` (Regular) / `claim_amount` (Adhoc) | `Wrong amount` → **`claim_zonal_amount`** (Regular) / `claim_amount` (Adhoc) |
+| Category 3 | `Contract / RFQ ID mismatch` → `claim_contract_id` | `Wrong RFQ ID` → **`claim_rfq_id`** (required). There is no separate contract-id field: the RFQ id *is* the contract reference. |
+| Billing panel | shows the aggregate-against-default-vehicle dropdown | dropdown suppressed; a note says the engine owns it (rule iii) |
+| `Disputes_Log.categories` | `billing` / `value` / `rfq` | `Wrong billing type (zonal)` / `Wrong zonal amount` / `Wrong RFQ` |
+
+An RTO trip of either scope shows `₹0 — RTO, not payable` rather than a KM or amount, matching the ONE
+RTO RULE. `_buildDisputeMap()` in `Code.gs` carries `claim_zonal_amount`, `claim_rfq_id`,
+`orig_route_scope`, `orig_rfq_id`, `orig_zonal_rfq_amount`, `resolved_zonal_amount` and `resolved_rfq_id`
+into the payload — without them the View-Dispute dialog could not render a zonal dispute at all.
 
 ---
 
@@ -191,14 +260,24 @@ Both need the same two changes:
 `resolved_km` / `resolved_aggregate_vehicle` are meaningless on a zonal row (no slab, no vehicle
 mapping) — gate both the same way, so an over-filled resolution CSV cannot corrupt a zonal trip.
 
-`resolved_rfq_id` stays in `Disputes_Log` only. `resolved_at` remains the already-applied guard.
+**`resolved_rfq_id` now writes `Trip_Level.rfq_id` on a zonal row** (amended 2026-08-07) — it is the
+billing reference, exactly as `resolved_contract_id` writes `contract_id` on a local row. The two are
+mutually exclusive: `_billRef()` decides which axis a row is on, and `resolved_contract_id` is ignored on
+zonal. `resolved_at` remains the already-applied guard.
 
 ## 9. MIS changes
 
 - The `Zonal` tab flips from **manual paste to reading `Trip_Level`**, writing `source = trip_level`.
-  Layout, the `SUMIFS`/`COUNTIFS` and the Summary line are unchanged — that was designed in.
+- Zonal is read **once, at vendor level, in `_misReadSource()`** and grouped by `rfq_id`. There is no
+  per-contract zonal figure any more — a zonal trip has no contract_id, so there is nothing to prefer
+  and nothing to double-count. `_misZonalRfq()` builds `m.zonal.rfqGroups`, which drives both the Zonal
+  tab bands and the Summary lines.
+- **Summary carries one line per `rfq_id`, then a `Zonal subtotal` row.** The subtotal repeats the lines
+  above it, so it is excluded from `TOTAL PAYABLE` — the grand total sums to the row *before* it.
 - Zonal is **grouped by `rfq_id`** (decision 7). That separates the migration set
-  (`MIG-FM-Aug-Zonal-…`, 3 ids in July) from standard (`FM-Zonal-…`, 6 ids) with no prefix logic.
+  (`MIG-FM-Aug-Zonal-…`) from standard (`FM-Zonal-…`) with no prefix logic.
+- New gate: **"Every zonal trip carries an RFQ ID"** (`WARN`). The amount still bills; the trip just
+  cannot be tied to an RFQ line on the vendor's invoice.
 - **No exception handling for planned ≠ actual route** (decision 6). 12 of 96 July trips differ, mostly
   node-order flips; they bill at the RFQ rate and the fix stays at RFQ source.
 - The vendor MIS `Zonal` tab gains `rfq_id` grouping and an RTO marker showing ₹0 where rule 8 applies.

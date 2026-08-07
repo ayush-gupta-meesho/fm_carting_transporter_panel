@@ -213,3 +213,107 @@ generated Excel *is* the frozen, issued artefact, so a separate archive step was
 - "L2" was deliberately not used in the vendor-facing wording — it is internal panel vocabulary and
   means nothing to a transporter. "Working detail (trip-by-trip backup)" carries the same meaning.
 - The Summary table now starts at row 5 and freezes 5 rows, so the banner stays visible while scrolling.
+
+## Zonal panel fixes: card bifurcation and a scope-aware dispute modal — 2026-08-07
+Two defects reached the vendor-facing panel because the zonal work reused local rendering paths
+unchanged. Both are fixed together in `vercel-app/index.html` + `apps-script/Code.gs`.
+
+**1. Two zonal cards in one cluster were indistinguishable.** A zonal card is created *per contract*,
+so a vendor with `RJK7-…` (7ft/12hr) and `RJK10-…` (10ft/24hr) in Rajkot saw two cards both titled
+"Rajkot · Zonal Routes". The name is now `<cluster> · <size> · <hours> · Zonal Routes`, the meta line
+mirrors the local card, and the Trip-MIS Contract dropdown appends the source contract id. `size` and
+`hours` are carried onto the zonal card from its parent contract so the L1 size/hours filters treat the
+two consistently. The internal `::ZONAL` suffix is stripped everywhere a vendor can see it.
+
+**2. Raising a dispute on a zonal trip showed "Current KM: null km".** The modal was built for the
+local axis only. It is now scope-aware:
+- categories become `Wrong billing type` / **`Wrong amount`** / **`Wrong RFQ ID`**;
+- the amount panel reads `zamt` (or `adhoc_amount` on zonal adhoc), never `km`;
+- an RTO trip of either scope reads `₹0 — RTO, not payable`, matching the ONE RTO RULE;
+- the aggregate-against-default-vehicle dropdown is suppressed — zonal has no vehicle level;
+- claims post `claim_zonal_amount` and `claim_rfq_id`, which `applyDispute()` already accepted but no
+  UI could ever send;
+- `Disputes_Log.categories` records `Wrong zonal amount` / `Wrong RFQ` on zonal so ops can read the log
+  without joining back to `Trip_Level`.
+
+`_buildDisputeMap()` in `Code.gs` was silently dropping all seven zonal dispute columns, so the
+View-Dispute dialog could not have rendered a zonal dispute even once the UI sent one. Added.
+
+**Validation is now automated, not eyeballed.** `vercel-app/_uitest.js` loads the real `index.html` in
+headless Chromium against the real `Code.gs` payload and walks every trip kind (Local Regular / Adhoc /
+Adhoc-RTO / Zonal Regular / Zonal Adhoc / Zonal RTO / zonal with no RFQ id / zonal with km+amt absent)
+through the dispute modal, asserting the posted claim body field-by-field, plus confirm, bulk confirm,
+View-Dispute, the table scroller and the CSV export. It fails on any `null`/`undefined`/`NaN` reaching
+the screen. 134 assertions, all passing. Run it before any future panel push.
+
+## A zonal trip has no contract_id — its rfq_id IS the contract id — 2026-08-07
+The engine leaves `contract_id` blank on zonal rows. Zonal was being grouped per contract everywhere, so
+this would have silently collapsed every zonal trip into one flat "Zonal Adhoc Trips" bucket on the panel
+and dropped the per-contract zonal figure in the MIS. Rebuilt around the RFQ.
+
+**Decisions taken (all three the recommended option):**
+
+1. **One panel card per `rfq_id`**, built at vendor level, internal id `ZONAL::<rfq_id>`, label
+   `<cluster> · <size> · Zonal · <rfq_id>`. Vendor attribution comes from `transporter_oracle_id`, which
+   every Trip_Level row carries — so no contract join is needed. Rejected: one card per cluster (re-creates
+   the ambiguity we just fixed) and one card per vendor (a vendor with 6 RFQs could not reconcile).
+2. **No RFQ master tab.** Cluster, vehicle size, period and last-trip date are derived from the card's own
+   trips (mode / min / max); the amount is whatever `zonal_rfq_amount` says. Zero ops overhead. The
+   accepted cost: nothing validates a trip's amount against a contracted RFQ rate. Revisit with a
+   `Zonal_RFQ_Info` tab if amounts start drifting.
+3. **MIS Summary gets one line per `rfq_id` plus a `Zonal subtotal`.** The subtotal repeats the lines
+   above it, so `TOTAL PAYABLE` sums to the row before it — otherwise zonal double-counts.
+
+**Consequences that needed code, not just wiring:**
+
+- `Code.gs` splits zonal out of `myTrips` *before* `tripsByContract` is built, so the per-contract loop
+  never sees a zonal row. `_zonalByContract` and the `_zOrphan` fallback are gone — both existed only to
+  cope with contract-keyed zonal.
+- `Billing.gs` has ONE zonal source again (`_misReadSource`, vendor level). The per-contract zonal
+  derivation, `c.zonalAmt/zonalAdhoc/zonalRows/zonalRfq`, and the `zTripCount ? contracts : paste`
+  preference are all deleted. A `route_scope != Zonal` filter stays in the contract loop as belt-and-braces
+  for the case where the engine *does* stamp a contract_id.
+- `Actions.gs` gains `_billRef(ctx, ri)` — the one place that decides "contract_id on local, rfq_id on
+  zonal". All three log tabs write it into their `contract_id` column, with `route_scope` alongside so ops
+  can tell them apart. The `ZONAL_NOT_EDITABLE` message names the RFQ instead of a blank contract id.
+- `resolved_rfq_id` now writes `Trip_Level.rfq_id` on a zonal row, mirroring `resolved_contract_id` →
+  `contract_id` on local. The two are mutually exclusive.
+- The dispute modal drops the separate contract-id field on zonal: one RFQ ID pair, since they are the
+  same thing.
+- New MIS gate: **"Every zonal trip carries an RFQ ID"** (`WARN`). A blank rfq_id used to be cosmetic;
+  it is now a missing contract reference. Such trips still bill and still show, grouped under
+  `(no RFQ id)`.
+
+**Verification.** Every zonal `contract_id` in the demo set was blanked to match production, then both
+harnesses were re-run: `testkit/_uitest.js` **153/153** and `testkit/_billtest.js` **22/22**. The MIS
+zonal total is **₹47,100 across 6 RFQ lines**, matching an independent hand-rolled sum off the CSV and
+matching the figure from before the change — so the restructure moved zero money. The billtest also
+blanks an `rfq_id` at runtime to prove the new gate bites and that the money does not move when it does.
+
+### Follow-ups the same day — the reference on the row, and the L2 header
+Two things surfaced on review of the RFQ change:
+
+**1. Each trip now names its own billing reference.** The trip table's Contract column was rendering the
+*card's* id, so a trip inside the Zonal Adhoc bucket read `ORC-4521_Zonal_Adhoc_Trips` instead of the RFQ
+it actually billed against, and inside a bucket L2 the column was hidden entirely — three trips from three
+different RFQs with no way to tell them apart. Fixed at the source: `_classifyTrip()` now returns
+`ref` (contract_id on local, rfq_id on zonal — the same rule as `_billRef()` in `Actions.gs`), every mapped
+trip carries it, and the panel renders `t.ref`. The column is titled **Contract / RFQ ID**, tinted teal on
+zonal rows, and shown on any panel whose trips span more than one reference — so on bucket cards and the
+global MIS, hidden on a contract card and a zonal RFQ card where the header already names it. A local trip
+with no contract_id reads `— no contract ID —` rather than borrowing the bucket's name.
+
+Also: **Replacement is dropped on an all-zonal panel** (there is no default-vehicle notion on zonal, so the
+column was a run of em dashes), and the RFQ is spelled out under the amount only where the reference column
+is hidden, so it never appears twice on one row.
+
+**2. The L2 header was misaligned.** The zonal explanation was crammed into the monospace `.csum-id` line,
+so a full sentence rendered as code, and the two metric tiles read "Vehicles —" and "Actual KMs Run —" —
+two dead dashes, because neither exists for zonal. The header now has three parts: the title, a short mono
+id line (RFQ ID · Period), and a **full-width `.csum-note` band** in the body font for any explanation. The
+two tiles are relabelled per card type — `Zonal Trips` / `Total Payable` on a zonal card, `Adhoc Trips` /
+`Total Payable` on a bucket, `Vehicles` / `Actual KMs Run` on a contract — so they always carry a number.
+
+Panel harness now at **172 assertions**, including header/body cell-count agreement on both a local and an
+all-zonal panel. That check earned itself immediately: a `var _bkN` I first named `_bn` shadowed the
+`breakupNote` element and broke `showL2` — the harness caught it before it left the container.

@@ -1,0 +1,128 @@
+/* MIS validation for the "zonal has no contract_id, rfq_id IS the contract id" change.
+   Runs the real Code.gs + Billing.gs in Node against the demo CSVs, and proves:
+     - zonal is still read and still totals the same after every zonal contract_id is blanked
+     - zonal is grouped one line per rfq_id, and those lines sum to the zonal total
+     - no zonal KM, amount or trip leaks into a local contract's slab / adhoc / vehicle rows
+     - the "every zonal trip carries an RFQ ID" gate fires when an rfq_id is blank
+   Compares against a hand-rolled independent sum so a bug in Billing.gs cannot hide behind itself. */
+const fs=require('fs');
+const DIR=__dirname+'/demo-data/';
+function readCsv(f){const txt=fs.readFileSync(DIR+f,'utf8');const rows=[];let cur=[],val='',q=false;
+ for(let i=0;i<txt.length;i++){const ch=txt[i];
+  if(q){if(ch==='"'){if(txt[i+1]==='"'){val+='"';i++;}else q=false;}else val+=ch;}
+  else if(ch==='"')q=true; else if(ch===','){cur.push(val);val='';}
+  else if(ch==='\n'){cur.push(val);rows.push(cur);cur=[];val='';} else if(ch!=='\r')val+=ch;}
+ if(val||cur.length){cur.push(val);rows.push(cur);}
+ const h=rows.shift().map(x=>x.trim());
+ return rows.filter(r=>r.some(c=>c!=='')).map(r=>{const o={};h.forEach((k,i)=>o[k]=r[i]===undefined?'':r[i]);return o;});}
+global.Utilities={formatDate:(d,tz,f)=>{const p=n=>String(n).padStart(2,'0');
+ const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+ return f.replace('yyyy',d.getFullYear()).replace('MMM',M[d.getMonth()]).replace('dd',p(d.getDate()))
+  .replace(/\bd\b/,d.getDate()).replace('HH',p(d.getHours())).replace('mm',p(d.getMinutes()));}};
+global.SpreadsheetApp={getActive:()=>({getSpreadsheetTimeZone:()=>'Asia/Kolkata'}),
+ openById:()=>{throw new Error('no MIS sheet in test')},create:()=>({}),getUi:()=>{throw new Error('no ui')}};
+global.Session={getScriptTimeZone:()=>'Asia/Kolkata',getActiveUser:()=>({getEmail:()=>'t@x'})};
+global.Logger={log:()=>{}};global.HtmlService={};global.CacheService={};global.PropertiesService={};
+global.UrlFetchApp={};global.MailApp={};global.DriveApp={};
+eval([__dirname+'/../apps-script/Code.gs',__dirname+'/../apps-script/Billing.gs'].map(f=>fs.readFileSync(f,'utf8')).join('\n'));
+_readTab=t=>readCsv(t+'.csv'); _tz=()=>'Asia/Kolkata';
+MIS_SHEET_ID=''; MIS_EXCLUDE_ORACLES=[];
+
+const fails=[],notes=[];
+const ck=(c,m)=>{ (c?notes:fails).push((c?'  ok   ':'  FAIL ')+m); };
+const R=n=>Math.round(n);
+
+/* ---- independent sum straight off the CSV, no Billing.gs involved ---- */
+const tl=readCsv('Trip_Level.csv');
+const ORC='ORC-4521';
+const indep={zonal:0,zTrips:0,byRfq:{},blankCid:0,blankRfq:0};
+tl.forEach(t=>{
+  if(String(t.transporter_oracle_id).trim()!=='19186' && String(t.transporter_oracle_id).trim()!==ORC) {
+    // demo file keys oracle by the numeric id; accept whatever the Contract_Info join uses
+  }
+  if(String(t.route_scope||'Local').trim().toLowerCase()!=='zonal') return;
+  const rto=/^rto/i.test(String(t.challan_type_final||t.challan_type||''));
+  const adhoc=String(t.billing_type_system||'').trim().toLowerCase()==='adhoc';
+  const amt=rto?0:(adhoc?Number(t.adhoc_amount||0)
+                        :Number(t.zonal_rfq_amount_final||t.zonal_rfq_amount||0));
+  indep.zonal+=amt; indep.zTrips++;
+  if(!String(t.contract_id||'').trim()) indep.blankCid++;
+  const k=String(t.rfq_id||'').trim()||'(no RFQ id)';
+  if(k==='(no RFQ id)') indep.blankRfq++;
+  indep.byRfq[k]=(indep.byRfq[k]||0)+amt;
+});
+
+console.log('── independent sum off the CSV ──');
+console.log('  zonal trips '+indep.zTrips+' · ₹'+R(indep.zonal)
+  +' · blank contract_id on '+indep.blankCid+' of them · blank rfq_id on '+indep.blankRfq);
+ck(indep.blankCid===indep.zTrips,'the demo data really does have a blank contract_id on every zonal trip');
+
+/* ---- Billing.gs ---- */
+const d=_misReadSource();
+const zKeys=Object.keys(d.zonal);
+console.log('\n── _misReadSource ──');
+zKeys.forEach(k=>console.log('  '+k+': '+d.zonal[k].rows.length+' rows · ₹'
+  +R(d.zonal[k].regAmt+d.zonal[k].adhocAmt)+' · '+d.zonal[k].rfqGroups.length+' RFQ group(s)'));
+ck(zKeys.length>0,'zonal is still read even though no zonal row carries a contract_id');
+ck((d.zonalOrphans||[]).length===0,'no zonal row is orphaned (vendor comes from transporter_oracle_id)');
+
+const m=buildBillingModel(ORC,d);
+console.log('\n── vendor model: '+m.vendorName+' ──');
+console.log('  local contracts: '+m.contracts.length);
+m.contracts.forEach(c=>console.log('    '+c.cid.padEnd(32)+' slab '+String(c.slabCV).padStart(6)
+  +' · regKm '+String(R(c.regKm)).padStart(6)+' · adhoc ₹'+String(R(c.adhocAmt)).padStart(7)));
+
+/* no zonal may leak into a local contract */
+let leak=0;
+m.contracts.forEach(c=>{
+  (c.allTrips||[]).forEach(t=>{ if(String(t.scope||'Local').toLowerCase()==='zonal') leak++; });
+  if(c.zonalAmt!==undefined||c.zonalRows!==undefined) leak+=100;   // fields should be gone entirely
+});
+ck(leak===0,'no zonal trip and no zonal field reaches a local contract record (leak count '+leak+')');
+
+console.log('\n── zonal, one line per RFQ ──');
+const g=m.zonal.rfqGroups;
+g.forEach(x=>console.log('    '+x.rfq.padEnd(40)+' '+String(x.trips).padStart(3)+' trip(s)  ₹'+R(x.amt)));
+const gSum=g.reduce((s,x)=>s+x.amt,0);
+console.log('    '+'ZONAL SUBTOTAL'.padEnd(40)+' '+String(m.totals.zonalTrips).padStart(3)+' trip(s)  ₹'+R(m.totals.zonal));
+ck(g.length>0,'zonal is grouped into '+g.length+' RFQ line(s)');
+ck(R(gSum)===R(m.totals.zonal),'the per-RFQ lines sum exactly to the zonal subtotal ('+R(gSum)+' vs '+R(m.totals.zonal)+')');
+ck(R(m.totals.zonal)===R(indep.zonal),'Billing.gs zonal total matches the independent CSV sum ('+R(m.totals.zonal)+' vs '+R(indep.zonal)+')');
+ck(m.totals.zonalTrips===indep.zTrips,'zonal trip count matches ('+m.totals.zonalTrips+' vs '+indep.zTrips+')');
+g.forEach(x=>{
+  ck(R(x.amt)===R(indep.byRfq[x.rfq]||0),'RFQ '+x.rfq+' matches the independent sum (₹'+R(x.amt)+')');
+});
+ck(Object.keys(indep.byRfq).length===g.length,'every RFQ in the data has a line ('+g.length+' of '+Object.keys(indep.byRfq).length+')');
+
+/* payable = fixed + excess + adhoc + zonal, no double count */
+const expect=m.totals.fixed+m.totals.excessAmt+m.totals.adhoc+m.totals.zonal;
+console.log('\n── totals ──');
+console.log('  fixed ₹'+R(m.totals.fixed)+' · excess ₹'+R(m.totals.excessAmt)+' · adhoc ₹'+R(m.totals.adhoc)
+  +' · zonal ₹'+R(m.totals.zonal)+'  =  PAYABLE ₹'+R(m.totals.payable));
+ck(R(m.totals.payable)===R(expect),'payable is the sum of its four parts, zonal counted once');
+
+/* the blank-rfq gate */
+const gates=runGates(m,d)||[];
+console.log('\n── gates ──');
+gates.forEach(x=>console.log('  ['+(x.level||'')+'] '+(x.verdict==='clear'?'PASS':x.verdict)+'  '+x.name+(x.detail?(' — '+x.detail):'')));
+const zg=gates.filter(x=>/carries an RFQ ID/i.test(x.name));
+ck(zg.length===1,'the "every zonal trip carries an RFQ ID" gate exists');
+ck(zg.length===1&&zg[0].verdict==='clear','that gate passes on clean data (no blank rfq_id here)');
+
+/* now break one rfq_id and prove the gate bites */
+const d2=JSON.parse(JSON.stringify(d));
+const _k=Object.keys(d2.zonal)[0];
+d2.zonal[_k].rows[0].rfqId='';
+d2.zonal[_k].rfqGroups=_misZonalRfq(d2.zonal[_k]);
+const m2=buildBillingModel(ORC,d2);
+const g2=(runGates(m2,d2)||[]).filter(x=>/carries an RFQ ID/i.test(x.name))[0];
+console.log('  broken-data gate → '+(g2?(g2.verdict+' · '+g2.detail):'(missing)'));
+ck(g2&&g2.verdict!=='clear','the gate FAILS when a zonal trip has a blank rfq_id');
+ck(g2&&/blank rfq_id/.test(g2.detail||''),'and the message names the problem');
+ck((m2.zonal.rfqGroups||[]).some(x=>x.rfq==='(no RFQ id)'),'a blank rfq_id still gets its own visible line, not dropped');
+ck(R(m2.totals.zonal)===R(m.totals.zonal),'blanking an rfq_id does not change the money (₹'+R(m2.totals.zonal)+')');
+
+console.log('\n── results ──');
+notes.forEach(n=>console.log(n));
+if(fails.length){ console.log('\n'+fails.length+' FAILURE(S):'); fails.forEach(f=>console.log(f)); process.exit(1); }
+console.log('\nALL '+notes.length+' CHECKS PASSED');

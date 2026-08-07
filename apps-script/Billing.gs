@@ -320,19 +320,13 @@ function _vmZonal(ss, m) {
   _vmHead(sh, NC, m.vendorName + '  \u00B7  Zonal trips',
           'Paid at a fixed amount per trip from the zonal RFQ  \u00B7  not part of any KM slab');
 
-  /* Rows come from Trip_Level per contract. The legacy paste block is used only while Trip_Level
-     carries no zonal rows, so the two sources can never both contribute. */
-  var rows = [];
-  m.contracts.forEach(function (c) {
-    (c.zonalRows || []).forEach(function (z) { z._cid = c.cid; rows.push(z); });
+  /* One source: the vendor-level zonal read (Trip_Level rows, or the legacy paste tab while the engine
+     is still being wired). A zonal trip has no contract_id, so there is nothing per-contract to merge. */
+  var rows = ((m.zonal && m.zonal.rows) || []).map(function (z) {
+    return { id: z.tripId, date: z.date, no: z.no, size: z.size, rfq: z.rfqId,
+             route: z.actual || z.planned, billing: z.billing, rto: !!z.rto,
+             amt: z.amt, status: z.status || '', challan: '', _cid: z.contractId || '' };
   });
-  if (!rows.length && m.zonal && m.zonal.rows) {
-    rows = m.zonal.rows.map(function (z) {
-      return { id: z.tripId, date: z.date, no: z.no, size: z.size, rfq: z.rfqId,
-               route: z.actual || z.planned, billing: z.billing, rto: !!z.rto,
-               amt: z.amt, status: z.status || '', challan: '', _cid: z.contractId || '' };
-    });
-  }
   if (!rows.length) { _vmNote(sh, 4, NC, 'no zonal trips in this period'); sh.setFrozenRows(4); return; }
 
   // group by RFQ id — this is what separates the migration set from the standard one
@@ -350,12 +344,12 @@ function _vmZonal(ss, m) {
     var sub = g.reduce(function (t, z) { return t + (z.amt || 0); }, 0);
     grand += sub;
     _vmBand(sh, r, NC, 'RFQ  ' + k + '   \u00B7   ' + g.length + ' trip' + (g.length > 1 ? 's' : '')); r++;
-    _vmHdr(sh, r, ['Date', 'Trip id', 'Vehicle', 'Size', 'Route', 'Contract', 'Challan type',
-                   'Type', 'Status', 'Amount']); r++;
+    _vmHdr(sh, r, ['Date', 'Trip id', 'Vehicle', 'Size', 'Route', 'RFQ ID (contract ref)',
+                   'Challan type', 'Type', 'Status', 'Amount']); r++;
     var first = r;
     var body = g.sort(function (x, y) { return String(x.date) < String(y.date) ? -1 : 1; })
       .map(function (z) {
-        return [z.date, z.id, z.no, z.size, z.route, z._cid || '', z.challan || '',
+        return [z.date, z.id, z.no, z.size, z.route, z.rfq || '(no RFQ id)', z.challan || '',
                 z.billing + (z.rto ? ' · RTO' : ''), z.status || '', z.amt || 0];
       });
     sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
@@ -377,8 +371,9 @@ function _vmZonal(ss, m) {
   sh.getRange(r, 10).setValue(grand).setFontSize(12).setFontWeight('bold').setNumberFormat(FMT_MONEY);
   sh.getRange(r, 1, 1, NC).setBackground(C_GREEN);
   r += 2;
-  _vmNote(sh, r, NC, 'Each zonal trip is paid a fixed amount from its RFQ. Zonal KM is not added to any '
-    + 'contract KM slab. An RTO zonal trip is shown for your records and is not payable.');
+  _vmNote(sh, r, NC, 'A zonal trip has no contract ID \u2014 its RFQ ID is the contract reference, and '
+    + 'each trip is paid a fixed amount from that RFQ. Zonal KM is not added to any contract KM slab. '
+    + 'An RTO zonal trip is shown for your records and is not payable.');
   sh.setFrozenRows(4);
 }
 
@@ -461,21 +456,38 @@ function _vmSummary(ss, m) {
     body.push(['Other adhoc trips (no contract)', '—', '', '', '', '', '', 0, 0,
                m.bucket.adhocAmt, 0, m.bucket.adhocAmt]);
   }
+  /* Zonal: one line PER RFQ ID, then a Zonal subtotal. The rfq_id is the contract reference for a
+     zonal trip, so each RFQ is its own billing line and a vendor can reconcile the MIS against their
+     invoice RFQ by RFQ. (decision 2026-08-07) */
   var zTot = m.totals.zonal;
-  if (zTot) {
-    body.push(['Zonal trips — ' + m.totals.zonalTrips + ' trip(s), fixed amount per trip from the RFQ',
-               '—', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
+  var zGroups = (m.zonal && m.zonal.rfqGroups) || [];
+  if (zGroups.length) {
+    zGroups.forEach(function (g) {
+      body.push(['Zonal RFQ  ' + g.rfq + '  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's'),
+                 '\u2014', '', '', '', '', '', 0, 0, 0, g.amt, g.amt]);
+    });
+    body.push(['Zonal subtotal \u2014 ' + m.totals.zonalTrips + ' trip(s) across ' + zGroups.length
+               + ' RFQ' + (zGroups.length === 1 ? '' : 's') + ', fixed amount per trip',
+               '\u2014', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
+  } else if (zTot) {
+    body.push(['Zonal trips \u2014 ' + m.totals.zonalTrips + ' trip(s), fixed amount per trip from the RFQ',
+               '\u2014', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
   }
   sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
   r += body.length;
   var last = r - 1;
 
+  /* The Zonal subtotal row repeats the per-RFQ lines above it, so it is EXCLUDED from the grand total
+     and tinted so it reads as a subtotal. Without this, zonal would be counted twice. */
+  var _zSubRow = zGroups.length ? last : 0;
   sh.getRange(r, 1).setValue('TOTAL PAYABLE').setFontSize(12).setFontWeight('bold');
   [4, 5, 6, 8, 9, 10, 11, 12].forEach(function (col) {
     var L = String.fromCharCode(64 + col);
-    sh.getRange(r, col).setFormula('=SUM(' + L + first + ':' + L + last + ')')
+    var _end = _zSubRow ? (_zSubRow - 1) : last;
+    sh.getRange(r, col).setFormula('=SUM(' + L + first + ':' + L + _end + ')')
       .setFontSize(12).setFontWeight('bold');
   });
+  if (_zSubRow) sh.getRange(_zSubRow, 1, 1, NC).setBackground(C_LBLUE).setFontWeight('bold');
   sh.getRange(r, 1, 1, NC).setBackground(C_GREEN);
   sh.getRange(first, 4, last - first + 2, 3).setNumberFormat(FMT_KM);
   sh.getRange(first, 7, last - first + 2, 1).setNumberFormat('0.00');
@@ -487,7 +499,7 @@ function _vmSummary(ss, m) {
     '•  Fixed amount is the contracted monthly value for the vehicles on the contract.',
     '•  KM from all your regular trips is pooled across the whole contract and compared with the grouped KM slab. Extra KM is charged only if the CONTRACT total goes above its slab — never vehicle by vehicle. See the Local tab.',
     '•  Adhoc trips are paid at a fixed amount per trip and sit outside the KM slab. See the Adhoc tab.',
-    '•  Zonal trips are paid at a fixed amount per trip from the zonal RFQ. Their KM is not added to any slab. See the Zonal tab.',
+    '•  Zonal trips have no contract ID — the RFQ ID is the contract reference. Each zonal trip is paid a fixed amount from its RFQ and its KM is not added to any slab. Each RFQ is its own line above; see the Zonal tab for the trips.',
     '•  RTO trips are listed at 0 KM and are not added to the slab.',
     '•  Where a replacement vehicle ran in place of a contracted vehicle, its KM is shown against the contracted vehicle it stood in for.'];
   if (pend || pendAmt) {
@@ -598,12 +610,31 @@ function _misReadSource() {
     }
   });
 
+  // rfq grouping is computed once, here, for the same reason zonal itself is: so no caller can forget
+  Object.keys(zonal).forEach(function (k) { zonal[k].rfqGroups = _misZonalRfq(zonal[k]); });
+
   return { info: info, byOracle: byOracle, orcKey: orcKey, vehs: vehs, defSet: defSet,
            plateHome: plateHome, trips: trips, orphans: orphans,
            zonal: zonal, zonalOrphans: zonalOrphans };
 }
 
-function _misZonalEmpty() { return { regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0, rows: [] }; }
+function _misZonalEmpty() { return { regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0, rows: [], rfqGroups: [] }; }
+/* Group a vendor's zonal rows by rfq_id. The rfq_id IS the contract reference for a zonal trip
+   (decision 2026-08-07), so this is the zonal equivalent of "per contract" and it drives both the
+   Summary lines and the Zonal tab bands. */
+function _misZonalRfq(z) {
+  var g = {}, order = [];
+  (z.rows || []).forEach(function (row) {
+    var k = _s(row.rfqId) || '(no RFQ id)';
+    if (!g[k]) { g[k] = { rfq: k, trips: 0, amt: 0, regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0 }; order.push(k); }
+    var e = g[k];
+    e.trips++; e.amt += (row.amt || 0);
+    if (_low(row.billing) === 'adhoc') { e.adhocN++; e.adhocAmt += (row.amt || 0); }
+    else                               { e.regN++;   e.regAmt   += (row.amt || 0); }
+  });
+  order.sort();
+  return order.map(function (k) { return g[k]; });
+}
 
 /**
  * Normalise a transporter_oracle_id for JOINING ONLY (never for display).
@@ -652,11 +683,12 @@ function buildBillingModel(oracle, d) {
     var defs = d.vehs[cid] || [];
     var dset = d.defSet[cid] || {};
     /* contract_id scopes the period — never date-filter here, or the MIS would silently disagree
-       with the panel. Zonal is split out: it never reaches a slab, a vehicle row or a utilisation %. */
-    var _allT = (d.trips[cid] || []);
-    var cTrips = [], zTripsC = [];
-    _allT.forEach(function (t) {
-      if (_low(_s(t.route_scope) || 'Local') === 'zonal') zTripsC.push(t); else cTrips.push(t);
+       with the panel. Zonal is excluded outright: it has no contract_id, its rfq_id is its contract
+       reference, and it is built at vendor level in _misReadSource. This filter is the belt-and-braces
+       case where the engine DID stamp a contract_id on a zonal row — it must still never reach a slab,
+       a vehicle row or a utilisation %. */
+    var cTrips = (d.trips[cid] || []).filter(function (t) {
+      return _low(_s(t.route_scope) || 'Local') !== 'zonal';
     });
 
     var slabCV = 0, fixedCV = 0;
@@ -762,23 +794,6 @@ function buildBillingModel(oracle, d) {
       return { no: no, ownKm: ownKm[no] || 0, trips: tripsN[no] || 0 };
     });
 
-    /* zonal for THIS contract, grouped by rfq_id (decision 7 — the MIG- set separates naturally) */
-    var zAmt = 0, zAdhoc = 0, zN = 0, zRfq = {}, zRfqOrder = [], zRows = [];
-    zTripsC.forEach(function (t) {
-      var zx = _classifyTrip(t, dset, 'Regular');
-      zN++;
-      var rec = { id: _s(t.trip_id), date: _misDate(t.trip_date), no: zx.no,
-        size: _s(t.vehicle_size) || _s(c.vehicle_size), rfq: zx.rfqId,
-        route: _buildRoute(t).join(' \u2192 '), billing: zx.billing, rto: zx.rto,
-        amt: zx.payable, status: _s(t.vendor_status),
-        challan: _s(t.challan_type_final) || _s(t.challan_type) };
-      zRows.push(rec);
-      if (zx.isAdhoc) zAdhoc += zx.payable; else zAmt += zx.payable;
-      var k = zx.rfqId || '(no RFQ id)';
-      if (!zRfq[k]) { zRfq[k] = { rfq: k, trips: 0, amt: 0 }; zRfqOrder.push(k); }
-      zRfq[k].trips++; zRfq[k].amt += zx.payable;
-    });
-
     var slabCI  = _num(c.total_km_slab);
     var fixedCI = _num(c.fixed_monthly_value);
     var exRate  = _num(c.ex_km_rate);
@@ -800,8 +815,6 @@ function buildBillingModel(oracle, d) {
       adhocTrips: adhocTrips, rtoTrips: rtoTrips,
       nearMiss: Object.keys(nearMiss).map(function (k) { return nearMiss[k]; }),
       outOfPeriod: outOfPeriod,
-      zonalTrips: zN, zonalAmt: zAmt, zonalAdhoc: zAdhoc, zonalRows: zRows,
-      zonalRfq: zRfqOrder.map(function (k) { return zRfq[k]; }),
       unattrKm: unattr.reduce(function (s, u) { return s + u.km; }, 0),
       isBucket: false
     });
@@ -839,20 +852,16 @@ function buildBillingModel(oracle, d) {
 function _misTotals(m) {
   var t = { slab: 0, regKm: 0, pendKm: 0, excessKm: 0, excessAmt: 0, fixed: 0,
             adhoc: 0, adhocPend: 0, zonal: 0, zonalTrips: 0, unattrKm: 0, payable: 0 };
-  var zFromContracts = 0, zTripCount = 0;
   m.contracts.forEach(function (c) {
     t.slab += c.slabCV; t.regKm += c.regKm; t.pendKm += c.pendKm;
     t.excessKm += c.excessKm; t.excessAmt += c.excessAmt; t.fixed += c.fixedCV;
     t.adhoc += c.adhocAmt; t.adhocPend += c.adhocPend; t.unattrKm += c.unattrKm;
-    zFromContracts += (c.zonalAmt || 0) + (c.zonalAdhoc || 0);
-    zTripCount += (c.zonalTrips || 0);
   });
   if (m.bucket) t.adhoc += m.bucket.adhocAmt;
-  /* Prefer the per-contract figure (Trip_Level). Fall back to the vendor-level paste only while
-     Trip_Level has no zonal rows, so the two can never be double-counted. */
-  var zFromPaste = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
-  t.zonal      = zTripCount ? zFromContracts : zFromPaste;
-  t.zonalTrips = zTripCount || ((m.zonal.rows || []).length);
+  /* ONE source for zonal: the vendor-level read in _misReadSource, keyed on rfq_id. A zonal trip has
+     no contract_id, so there is no per-contract figure to prefer and no double-count to guard. */
+  t.zonal      = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
+  t.zonalTrips = (m.zonal.rows || []).length;
   t.payable = t.fixed + t.excessAmt + t.adhoc + t.zonal;
   return t;
 }
@@ -982,6 +991,13 @@ function runGates(model, d) {
       zo.length ? (zo.length + ' oracle(s) on the Zonal tab match no contract — ₹'
         + Math.round(zo.reduce(function (t, x) { return t + x.amt; }, 0))
         + ' would not be billed: ' + zo.map(function (x) { return x.oracle; }).join(', ')) : '');
+
+  /* rfq_id is the contract reference for a zonal trip, so a blank one cannot be reconciled against a
+     vendor invoice. The amount still bills (the engine set it) — this is a reconciliation gate, so WARN. */
+  var _zNo = ((model.zonal && model.zonal.rfqGroups) || []).filter(function (x) { return x.rfq === '(no RFQ id)'; })[0];
+  add('Every zonal trip carries an RFQ ID', !_zNo,
+      _zNo ? (_zNo.trips + ' zonal trip(s) have a blank rfq_id \u2014 \u20b9' + Math.round(_zNo.amt)
+        + ' still bills but cannot be tied to an RFQ line on the invoice. Fix in the data engine.') : '', 'WARN');
 
   var oop = 0;
   model.contracts.forEach(function (c) { oop += (c.outOfPeriod || []).length; });

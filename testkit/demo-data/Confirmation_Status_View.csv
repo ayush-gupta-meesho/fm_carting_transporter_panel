@@ -1,0 +1,1 @@
+row_id,trip_id,contract_id,transporter_oracle_id,route_scope,sent_to_vendor_timestamp,vendor_status,status_updated_at,dispute_id,dispute_status,reconfirm_status,dispute_window_end,final_state
