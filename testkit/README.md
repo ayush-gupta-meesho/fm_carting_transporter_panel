@@ -10,12 +10,46 @@ Loads the **real** `vercel-app/index.html` in headless Chromium against a payloa
 cd testkit
 npm i playwright && npx playwright install chromium   # first time only
 node _mkpayload.js      # runs Code.gs over demo-data/*.csv -> payload.json
+node _apitest.js        # API: the dispute-claim contract across all three hops
 node _uitest.js         # panel: drives a real browser
 node _billtest.js       # MIS: runs Billing.gs vs an independent sum
 ```
 
-Both exit non-zero on any failure. Current state: **_uitest 207 assertions, _billtest 22 assertions,
-all passing.**
+PowerShell has no `&&` — run each line on its own:
+
+```powershell
+cd testkit
+npm i playwright
+npx playwright install chromium
+node _mkpayload.js
+node _apitest.js
+node _uitest.js
+node _billtest.js
+```
+
+All three exit non-zero on any failure. Current state: **_apitest 19, _uitest 207, _billtest 22 — all
+passing.**
+
+## `_apitest.js` — the hop nothing else covers
+
+A dispute claim has to survive **three** files, each naming its fields independently:
+
+1. `vercel-app/index.html` `submitDispute()` builds the POST body
+2. `vercel-app/api/action.js` copies the body into the queued Upstash action — **an explicit whitelist**
+3. `apps-script/Actions.gs` `applyDispute()` writes the action into `Disputes_Log`
+
+A field missing from hop 2 is dropped **silently**: the dispute still lands, the trip still flips to
+Disputed, so it looks like it worked — the claim just arrives blank. That is exactly how
+`claim_zonal_amount` and `claim_rfq_id` went missing after the zonal work, and neither `_uitest` (which
+stops at the POST body) nor `_billtest` could see it.
+
+| Area | Checks |
+|---|---|
+| Static contract | the `claim_*` field sets extracted from all three files must be **identical** — it names any field dropped or orphaned at either boundary |
+| Live | actually invokes `api/action.js` with a stubbed Upstash and asserts the queued action carries `claim_zonal_amount = 5500` and `claim_rfq_id`, that a zonal claim never carries `claim_km` or `claim_aggregate_vehicle`, and that a local claim never carries a zonal amount |
+| Gates | no category, no proof, and a trip belonging to another vendor are all still rejected |
+
+**Any new `claim_*` field must be added in all three places.** This test is what tells you when it isn't.
 
 ## What it asserts
 

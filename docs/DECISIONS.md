@@ -351,3 +351,33 @@ Panel harness now at **207 assertions**, including: the Action header and the Co
 *without scrolling* at five viewport widths; Confirm appears for every pending trip; Raise Dispute appears
 for exactly those whose window is open; "Dispute window closed" for exactly the rest; and never both or
 neither on one row.
+
+### The dispute claim was being dropped by the API — 2026-08-07
+Ayush raised a zonal dispute claiming ₹5,500 against ₹5,300 and **the claimed amount did not appear
+anywhere**. The dispute itself landed and the status flipped, so nothing looked broken.
+
+**Root cause: `vercel-app/api/action.js` builds the queued action from an explicit field whitelist, and
+`claim_zonal_amount` / `claim_rfq_id` were not in it.** The panel sent them, the API silently discarded
+them, and `applyDispute()` received `undefined` and wrote blanks. `Disputes_Log` had all 7 zonal columns —
+the schema was never the problem.
+
+This is a third place a dispute field has to be named, and I had only checked two: the panel and
+`Actions.gs`. `_uitest.js` asserts the POST **body** the browser sends, so it could never have caught this;
+the drop happens one hop later, server-side.
+
+**New harness `testkit/_apitest.js` closes the class of bug, not just this instance.** It extracts the
+`claim_*` field sets from all three files — `index.html` `submitDispute()`, the `api/action.js` whitelist,
+and `applyDispute()` — and fails if they are not identical, naming any field dropped or orphaned at either
+boundary. Plus a live pass that actually invokes the handler with a stubbed Upstash and asserts
+`claim_zonal_amount = 5500` reaches the queue. Verified non-vacuous: deleting the line from
+`api/action.js` makes 3 assertions fail, including the live one.
+
+Also this round:
+- **An always-visible horizontal scrollbar** on `.tscroll` (styled thumb + track, `scrollbar-gutter:stable`)
+  instead of the OS overlay bar that fades out, plus a hint line — *"Scroll the table sideways… the Action
+  buttons stay pinned on the right"* — that appears only while the table actually overflows. The pinned
+  Action column told a vendor nothing about the middle columns they were missing.
+- The pinned column's shadow was softened to a 1px border plus a faint edge, so it reads as an edge
+  rather than a bevel.
+
+Harness totals: **_apitest 19 · _uitest 207 · _billtest 22.**

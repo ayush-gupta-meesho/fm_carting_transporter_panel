@@ -115,7 +115,18 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 /* 10 columns do not fit a laptop viewport once contract ids and routes are real. Scroll the table
    rather than wrap every cell into 2-3 lines — wrapping made rows 3x tall and unreadable. */
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px;
-  border:1px solid var(--line);background:var(--white);}
+  border:1px solid var(--line);background:var(--white);
+  /* An always-visible scrollbar, not an overlay one that fades out. A vendor has to be able to SEE that
+     there is more table to the right — the pinned Action column tells them nothing about the middle
+     columns they are missing. */
+  scrollbar-width:thin;scrollbar-color:#B9C4D4 #EFF3F8;scrollbar-gutter:stable;}
+.tscroll::-webkit-scrollbar{height:11px;}
+.tscroll::-webkit-scrollbar-track{background:#EFF3F8;border-radius:0 0 10px 10px;}
+.tscroll::-webkit-scrollbar-thumb{background:#B9C4D4;border-radius:6px;border:2px solid #EFF3F8;}
+.tscroll::-webkit-scrollbar-thumb:hover{background:#98A6BA;}
+/* a hint that only shows while the table actually overflows */
+.tscroll-hint{display:none;font-size:10.5px;color:var(--muted);margin:6px 0 0;}
+.tscroll-hint.show{display:block;}
 .tscroll .ttable{min-width:1080px;}
 .ttable td,.ttable th{vertical-align:middle;}
 .tid-main{font-weight:600;font-size:11.5px;white-space:nowrap;}
@@ -238,7 +249,7 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 /* Action is PINNED to the right edge of the scroller. Confirm / Raise Dispute must be reachable at any
    window width — a vendor who cannot see those buttons cannot use the panel at all. */
 .ttable th.col-act,.ttable td.col-act{position:sticky;right:0;z-index:2;background:#fff;
-  box-shadow:-8px 0 10px -8px rgba(16,32,56,.22);}
+  border-left:1px solid var(--line);box-shadow:-6px 0 6px -6px rgba(16,32,56,.14);}
 .ttable thead th.col-act{z-index:3;}
 .ttable tbody tr:hover td.col-act{background:#FBFCFE;}
 /* the status sub-line may wrap — it is the widest thing in a row and nothing depends on one line */
@@ -959,6 +970,7 @@ function renderMISInto(panelId, cid){
     '<div class="tscroll"><table class="ttable"><thead><tr>'+
       (_ro?'':'<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th>')+'<th style="min-width:132px;">Trip Info</th>'+(_showRef?'<th style="min-width:112px;">Contract / RFQ ID</th>':'')+'<th style="min-width:116px;">Route</th><th style="min-width:112px;">Billing</th>'+(_showRepl?'<th style="min-width:92px;">Replacement</th>':'')+'<th style="min-width:86px;">Completed</th><th style="min-width:104px;">KMs / Amount</th><th style="min-width:132px;">Status</th>'+(_ro?'':'<th class="col-act" style="min-width:104px;">Action</th>')+
     '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table></div>'+
+    '<div class="tscroll-hint" id="hint_'+panelId+'">↔ Scroll the table sideways to see all columns — the Action buttons stay pinned on the right.</div>'+
     (_ro?'':'<div class="bulkbar" id="bulk_'+panelId+'" style="display:none;"><span id="bulkCount_'+panelId+'">0 trips selected</span> <button class="btn btn-primary" onclick="bulkConfirm(\''+panelId+'\')">Confirm Selected</button></div>');
 
   var billSel=panel.querySelector('#f_bill'), rtoSel=panel.querySelector('#f_rto'),
@@ -1042,7 +1054,17 @@ function renderMISInto(panelId, cid){
       (_ro?'':'<td class="col-act">'+actionCell+'</td>')+'</tr>';
   }).join('');
   if(!_ro) updateBulk(panelId);
+  _syncScrollHint(panelId);
 }
+/* show the sideways-scroll hint only when there is actually something to scroll to */
+function _syncScrollHint(panelId){
+  var panel=document.getElementById(panelId); if(!panel) return;
+  var wrap=panel.querySelector('.tscroll'), hint=panel.querySelector('#hint_'+panelId);
+  if(!wrap||!hint) return;
+  var over=wrap.scrollWidth-wrap.clientWidth;
+  hint.classList.toggle('show', over>4);
+}
+window.addEventListener('resize',function(){ ['misPanel','tripPanelContract'].forEach(_syncScrollHint); });
 function setSub(panelId,s){ subState[panelId]=s; renderMISInto(panelId, panelId==='misPanel'?null:misContractId); }
 
 function routeHtml(route){

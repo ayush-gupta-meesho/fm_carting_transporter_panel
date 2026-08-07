@@ -65,6 +65,12 @@ module.exports = async (req, res) => {
         claim_aggregate_vehicle: String(body.claim_aggregate_vehicle || ''),
         claim_km: (body.claim_km === undefined || body.claim_km === null) ? '' : body.claim_km,
         claim_amount: (body.claim_amount === undefined || body.claim_amount === null) ? '' : body.claim_amount,
+        /* Zonal claims. This whitelist is the third place a dispute field has to be named — the panel
+           sends it, THIS builds the queued action, and applyDispute() writes it. Omitting a field here
+           drops it silently: the dispute still lands and the status still flips, but the claim arrives
+           blank. Any new claim_* field must be added here too. */
+        claim_zonal_amount: (body.claim_zonal_amount === undefined || body.claim_zonal_amount === null) ? '' : body.claim_zonal_amount,
+        claim_rfq_id: String(body.claim_rfq_id || ''),
         claim_contract_id: String(body.claim_contract_id || ''),
         vendor_description: String(body.vendor_description || ''),
         proof_url: String(body.proof_url || ''),
