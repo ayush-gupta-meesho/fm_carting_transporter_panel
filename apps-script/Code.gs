@@ -506,6 +506,7 @@ function _buildVendorPayload(oracle, opts) {
         rto:       rto ? true : undefined,
         status:    _x.statusUi,
         win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
+        winTs:     _s(t.dispute_window_end),   // raw + comparable; blank = no window recorded = open
         disp:      dmap[_s(t.trip_id)] || null
       };
     });
@@ -582,6 +583,7 @@ function _buildVendorPayload(oracle, opts) {
       rto: zx.rto ? true : undefined,
       status: zx.statusUi,
       win: zx.settled ? null : _fmtWin(t.dispute_window_end),
+      winTs: _s(t.dispute_window_end),
       disp: dmap[_s(t.trip_id)] || null
     };
     if (zx.isAdhoc) {
@@ -657,6 +659,7 @@ function _buildVendorPayload(oracle, opts) {
         amt: isAdhoc ? _x.payable : null, rto: rto ? true : undefined,
         status: _x.statusUi,
         win: _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
+        winTs: _s(t.dispute_window_end),
         disp: dmap[_s(t.trip_id)] || null
       };
     });

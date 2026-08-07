@@ -317,3 +317,37 @@ two tiles are relabelled per card type — `Zonal Trips` / `Total Payable` on a 
 Panel harness now at **172 assertions**, including header/body cell-count agreement on both a local and an
 all-zonal panel. That check earned itself immediately: a `var _bkN` I first named `_bn` shadowed the
 `breakupNote` element and broke `showL2` — the harness caught it before it left the container.
+
+### "Zonal trips are not transferring / the Confirm buttons are gone" — 2026-08-07
+Three reports, three different answers. Diagnosed against the live sheet (32 trips, 11 zonal), not guessed.
+
+**1. The zonal trips WERE transferred — all 11.** Every zonal row already carried
+`sent_to_vendor_flag = Yes`, so `transferReadyTrips()` skipped them, correctly, and menu 4 reported nothing
+moved. Root cause: `sample-data/zonal_demo_rows.csv` shipped with `sent_to_vendor_flag = Yes` pre-set. That
+also explains report 2 ("why am I seeing trips that have not been transferred") — the same fact from the
+other side. The CSV now ships with `ground_review_deadline`, `sent_to_vendor_flag`,
+`sent_to_vendor_timestamp`, `vendor_status` and `dispute_window_end` **blank**, so menu 4 does the real work
+and stamps a live 15-day dispute window instead of a stale July one.
+
+Side effect of the pre-flagged paste, worth knowing: 9 of the 11 never got a `dispute_window_end`, because
+menu 4 is the only thing that writes it and menu 4 never ran on them.
+
+**2. Confirm / Raise Dispute were being rendered but were unreachable.** Adding the Contract / RFQ ID
+column pushed the table to 1463px; below ~1400px the `.tscroll` scroller kicked in and the Action column
+sat past the right edge. Measured: 83px of overflow at 1440, 243px at 1280. **The Action column is now
+pinned** (`position:sticky; right:0`), which required `.ttable` to drop `border-collapse:collapse` and its
+own `overflow:hidden` — sticky cells are ignored under both — with `.tscroll` taking over the rounded
+corners. Column min-widths were trimmed too, so 1440px now has zero overflow and nothing scrolls at all.
+Verified visible at 1920 / 1600 / 1440 / 1280 / 1152.
+
+**3. New: the panel no longer offers an action the backend will reject.** `applyDispute()` throws once
+`dispute_window_end` has passed, but the row still showed a Raise Dispute link — the vendor would click it
+and get an error. The payload now carries `winTs` (the raw timestamp) beside `win` (the display string), and
+a closed window renders a muted "Dispute window closed" with the date in its tooltip. Confirm stays, because
+confirming has no window. A blank window counts as open, matching the backend, which only enforces a window
+it can read.
+
+Panel harness now at **207 assertions**, including: the Action header and the Confirm button are on screen
+*without scrolling* at five viewport widths; Confirm appears for every pending trip; Raise Dispute appears
+for exactly those whose window is open; "Dispute window closed" for exactly the rest; and never both or
+neither on one row.

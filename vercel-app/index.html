@@ -108,14 +108,20 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 
 /* Vehicle table */
 .vtable,.ttable{width:100%;border-collapse:collapse;background:var(--white);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:12px;}
+/* position:sticky on a th/td is ignored under border-collapse:collapse, and the table's own
+   overflow:hidden would clip the pinned cell — so .ttable opts out of both and .tscroll takes over
+   the rounded corners. This is what makes the pinned Action column actually work. */
+.ttable{border-collapse:separate;border-spacing:0;overflow:visible;border-radius:0;border:none;}
 /* 10 columns do not fit a laptop viewport once contract ids and routes are real. Scroll the table
    rather than wrap every cell into 2-3 lines — wrapping made rows 3x tall and unreadable. */
-.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px;}
-.tscroll .ttable{min-width:1180px;}
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px;
+  border:1px solid var(--line);background:var(--white);}
+.tscroll .ttable{min-width:1080px;}
 .ttable td,.ttable th{vertical-align:middle;}
 .tid-main{font-weight:600;font-size:11.5px;white-space:nowrap;}
 .tid-sub{font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;}
 .vtable th,.ttable th{background:#F7FAFD;color:var(--muted);text-align:left;padding:10px 14px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--line);}
+.ttable thead th.col-act{background:#F7FAFD;}
 .vtable td,.ttable td{padding:11px 14px;border-bottom:1px solid #EEF2F7;}
 .vtable tr:last-child td,.ttable tr:last-child td{border-bottom:none;}
 .vrow{cursor:pointer;transition:background .12s;}
@@ -228,7 +234,15 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 
 /* Contract ID pill in trip table */
 .cid-pill{font-family:monospace;font-size:9.5px;background:#EEF3F8;color:#3A6BA8;padding:2px 7px;border-radius:5px;
-  display:inline-block;max-width:168px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:help;}
+  display:inline-block;max-width:132px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:help;}
+/* Action is PINNED to the right edge of the scroller. Confirm / Raise Dispute must be reachable at any
+   window width — a vendor who cannot see those buttons cannot use the panel at all. */
+.ttable th.col-act,.ttable td.col-act{position:sticky;right:0;z-index:2;background:#fff;
+  box-shadow:-8px 0 10px -8px rgba(16,32,56,.22);}
+.ttable thead th.col-act{z-index:3;}
+.ttable tbody tr:hover td.col-act{background:#FBFCFE;}
+/* the status sub-line may wrap — it is the widest thing in a row and nothing depends on one line */
+.ttable td.col-st .st-win{white-space:normal;}
 
 /* KM counter emphasis */
 .kmcounter{color:var(--cyan);}
@@ -943,7 +957,7 @@ function renderMISInto(panelId, cid){
       '<div class="filt"><span class="fl-lbl">Show:</span><select id="f_rto" onchange="renderMISInto(\''+panelId+'\',\''+(cid||'')+'\')"><option value="all">All trips</option><option value="km">KM-bearing only</option><option value="rto">RTO-only (0 KM)</option></select></div>'+
     '</div>'+
     '<div class="tscroll"><table class="ttable"><thead><tr>'+
-      (_ro?'':'<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th>')+'<th style="min-width:150px;">Trip Info</th>'+(_showRef?'<th style="min-width:130px;">Contract / RFQ ID</th>':'')+'<th style="min-width:130px;">Route</th><th style="min-width:132px;">Billing</th>'+(_showRepl?'<th style="min-width:104px;">Replacement</th>':'')+'<th style="min-width:96px;">Completed</th><th style="min-width:112px;">KMs / Amount</th><th style="min-width:150px;">Status</th>'+(_ro?'':'<th>Action</th>')+
+      (_ro?'':'<th style="width:34px;"><input type="checkbox" id="selAll_'+panelId+'" onchange="toggleSelectAll(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></th>')+'<th style="min-width:132px;">Trip Info</th>'+(_showRef?'<th style="min-width:112px;">Contract / RFQ ID</th>':'')+'<th style="min-width:116px;">Route</th><th style="min-width:112px;">Billing</th>'+(_showRepl?'<th style="min-width:92px;">Replacement</th>':'')+'<th style="min-width:86px;">Completed</th><th style="min-width:104px;">KMs / Amount</th><th style="min-width:132px;">Status</th>'+(_ro?'':'<th class="col-act" style="min-width:104px;">Action</th>')+
     '</tr></thead><tbody id="tb_'+panelId+'"></tbody></table></div>'+
     (_ro?'':'<div class="bulkbar" id="bulk_'+panelId+'" style="display:none;"><span id="bulkCount_'+panelId+'">0 trips selected</span> <button class="btn btn-primary" onclick="bulkConfirm(\''+panelId+'\')">Confirm Selected</button></div>');
 
@@ -1009,7 +1023,10 @@ function renderMISInto(panelId, cid){
       ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
       : '<td></td>');
     var actionCell;
-    if(t.status==='pending') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Confirm</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Raise Dispute</button>';
+    if(t.status==='pending') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Confirm</button> '
+      +(disputeOpen(t)
+        ? '<button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Raise Dispute</button>'
+        : '<div class="st-win" style="margin-top:4px;" title="The dispute window closed on '+(t.win||'—')+'. Contact your AM or TM if this trip is still wrong.">Dispute window closed</div>');
     else if(t.status==='reconfirm') actionCell='<button class="btn btn-primary" onclick="confirmTrip(\''+t.cid+'\',\''+t.id+'\')">Accept</button> <button class="btn btn-link" onclick="openDispute(\''+t.cid+'\',\''+t.id+'\')">Re-dispute</button>';
     else actionCell='<span style="color:var(--muted);font-size:11px;">'+(t._pending?'saving…':'no action')+'</span>';
     /* contract ID for a local trip, RFQ ID for a zonal one — teal so the two read apart at a glance */
@@ -1021,8 +1038,8 @@ function renderMISInto(panelId, cid){
       '<td><div class="tid-main">'+t.id+'</div><div class="tid-sub">'+t.size+' · '+t.vehNo+'</div></td>'+
       cidCol+
       '<td>'+routeHtml(t.route)+'</td><td>'+billBadge+'</td>'+(_showRepl?('<td>'+replCol+'</td>'):'')+
-      '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td>'+statusCell+'</td>'+
-      (_ro?'':'<td>'+actionCell+'</td>')+'</tr>';
+      '<td style="font-size:11px;">'+t.completed+'</td><td>'+kmCell+'</td><td class="col-st">'+statusCell+'</td>'+
+      (_ro?'':'<td class="col-act">'+actionCell+'</td>')+'</tr>';
   }).join('');
   if(!_ro) updateBulk(panelId);
 }
@@ -1118,6 +1135,19 @@ function postAction(body){
     .then(function(x){return x.json();}).catch(function(){return {ok:false,error:'Network error.'};});
 }
 function _findTrip(cid,id){ return (TRIPS[cid]||[]).find(function(x){return x.id===id;}); }
+/* Is this trip's dispute window still open? applyDispute() in Actions.gs THROWS once the window has
+   passed, so the panel must not keep offering a button the backend will reject — that is the difference
+   between a closed window and a broken one, from the vendor's side. A blank window means none was
+   recorded (the row was flagged sent_to_vendor outside menu 4), and blank stays permissive, matching
+   the backend, which only enforces a window it can actually read. */
+function disputeOpen(t){
+  if(!t) return false;
+  if(t.status==='reconfirm') return true;             // a re-dispute has no original window
+  var raw=t.winTs||''; if(!raw) return true;
+  var d=new Date(String(raw).replace(' ','T'));
+  if(isNaN(d.getTime())) return true;                 // unparseable -> let the backend decide
+  return d.getTime()>=Date.now();
+}
 function rerenderMIS(){
   if(document.getElementById('view-mis').classList.contains('active')) renderMISInto('misPanel',null);
   if(document.getElementById('view-l2').classList.contains('active')) renderMISInto('tripPanelContract', currentContract?currentContract.id:null);

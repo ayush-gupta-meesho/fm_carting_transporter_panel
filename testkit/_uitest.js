@@ -311,6 +311,72 @@ console.log('  table '+lay.scrollW+'px inside a '+lay.clientW+'px column');
 const bodyOverflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
 ck(bodyOverflow<=1,'the page itself does not scroll sideways (overflow '+bodyOverflow+'px)');
 
+/* ── 7b. Confirm / Raise Dispute must be REACHABLE, not merely rendered ──── */
+console.log('\n── action column reachability ──');
+for(const w of [1920,1600,1440,1280,1152]){
+  await page.setViewportSize({width:w,height:900});
+  await page.evaluate(()=>showGlobalMIS()); await page.waitForTimeout(200);
+  const m=await page.evaluate(()=>{
+    const wrap=document.querySelector('#view-mis .tscroll');
+    const tbl=wrap.querySelector('table');
+    wrap.scrollLeft=0;                                     // worst case: NOT scrolled right
+    const th=[].slice.call(tbl.querySelectorAll('thead th'));
+    const act=th[th.length-1];
+    const btn=wrap.querySelector('tbody td.col-act .btn-primary');
+    const wr=wrap.getBoundingClientRect();
+    const ar=act.getBoundingClientRect();
+    const br=btn?btn.getBoundingClientRect():null;
+    return {last:act.textContent.trim(), sticky:getComputedStyle(act).position,
+      overflow:tbl.scrollWidth-wrap.clientWidth,
+      headerVisible: ar.right<=wr.right+1 && ar.left>=wr.left-1,
+      btnText:btn?btn.textContent.trim():null,
+      btnVisible: br? (br.right<=wr.right+1 && br.left>=wr.left-1) : false};
+  });
+  console.log('  '+w+'px: overflow '+m.overflow+' · last col "'+m.last+'" ('+m.sticky+') · header visible '+m.headerVisible+' · "'+m.btnText+'" visible '+m.btnVisible);
+  ck(m.last==='Action','the Action column exists at '+w+'px');
+  ck(m.sticky==='sticky','the Action column is pinned at '+w+'px');
+  ck(m.headerVisible,'the Action header is on screen without scrolling at '+w+'px');
+  ck(m.btnVisible,'the Confirm button is on screen without scrolling at '+w+'px (was scrolled off)');
+}
+await page.setViewportSize({width:1440,height:1000});
+/* and the buttons are actually there for a pending trip, on every card type */
+{
+  const kinds=await page.evaluate(()=>{
+    const out=[];
+    ['isZonalCard','isZonalAdhocBucket','isAdhocBucket'].forEach(f=>{const c=CONTRACTS.find(x=>x[f]);if(c)out.push(c.id);});
+    const l=CONTRACTS.find(c=>!c.isZonalCard&&!c.isAdhocBucket); if(l) out.push(l.id);
+    return out;});
+  for(const id of kinds){
+    await page.evaluate(i=>showL2(i),id); await page.waitForTimeout(150);
+    const b=await page.evaluate(i=>{
+      const rows=[].slice.call(document.querySelectorAll('#tripPanelContract tbody tr'));
+      let pend=0,conf=0,dispOK=0,dispClosed=0,both=0,neither=0;
+      rows.forEach(tr=>{
+        const txt=tr.innerText;
+        if(!/Pending Confirmation/.test(txt)) return;
+        pend++;
+        const hasConf=/Confirm<|Confirm$|Confirm\b/.test(txt);
+        const hasD=/Raise Dispute/.test(txt), hasC=/Dispute window closed/.test(txt);
+        if(hasConf) conf++;
+        if(hasD) dispOK++; if(hasC) dispClosed++;
+        if(hasD&&hasC) both++; if(!hasD&&!hasC) neither++;
+      });
+      // cross-check against the payload's own view of the window
+      const open=(TRIPS[i]||[]).filter(t=>t.status==='pending'&&disputeOpen(t)).length;
+      const shut=(TRIPS[i]||[]).filter(t=>t.status==='pending'&&!disputeOpen(t)).length;
+      return {pend,conf,dispOK,dispClosed,both,neither,open,shut};},id);
+    console.log('  '+id.padEnd(34)+' pending '+b.pend+' → Confirm '+b.conf
+      +' · Raise Dispute '+b.dispOK+'/'+b.open+' open · "closed" '+b.dispClosed+'/'+b.shut);
+    if(b.pend){
+      ck(b.conf===b.pend,'Confirm shows for EVERY pending trip on '+id+' ('+b.conf+'/'+b.pend+')');
+      ck(b.dispOK===b.open,'Raise Dispute shows for every pending trip whose window is open on '+id);
+      ck(b.dispClosed===b.shut,'"Dispute window closed" shows where the window has passed on '+id);
+      ck(b.both===0,'never both a Raise Dispute button and a closed notice on one row ('+id+')');
+      ck(b.neither===0,'every pending row says one or the other ('+id+')');
+    }
+  }
+}
+
 /* ── 8. CSV export still builds ──────────────────────────────────────────── */
 const csvHead=await page.evaluate(()=>{
   let cap=null; const old=Blob; window.Blob=function(a,o){cap=a[0];return new old(a,o);};

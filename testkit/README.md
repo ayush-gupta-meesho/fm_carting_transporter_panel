@@ -14,7 +14,7 @@ node _uitest.js         # panel: drives a real browser
 node _billtest.js       # MIS: runs Billing.gs vs an independent sum
 ```
 
-Both exit non-zero on any failure. Current state: **_uitest 172 assertions, _billtest 22 assertions,
+Both exit non-zero on any failure. Current state: **_uitest 207 assertions, _billtest 22 assertions,
 all passing.**
 
 ## What it asserts
@@ -28,6 +28,8 @@ all passing.**
 | Validation | empty category, empty amount, non-numeric amount and missing callback number are all still blocked |
 | View dispute | a local and a zonal dispute (open and resolved) render with their real categories |
 | Confirm | single confirm and bulk confirm both post from a zonal card |
+| Action reachability | at 1920 / 1600 / 1440 / 1280 / 1152px, the Action header **and** the Confirm button must be on screen with the scroller at `scrollLeft = 0`. This is the check that would have caught the buttons being pushed off the right edge |
+| Dispute window | Confirm appears for every pending trip; Raise Dispute for exactly those whose `winTs` is still open; "Dispute window closed" for exactly the rest; never both and never neither on one row |
 | Layout | the trip table sits in a `.tscroll` scroller and the page itself never scrolls sideways |
 | CSV | `downloadCSV()` builds and carries the Route Scope column |
 | Zonal identity | every zonal row in `demo-data/Trip_Level.csv` has a **blank `contract_id`**, matching production. Asserts cards are keyed `ZONAL::<rfq_id>`, one per RFQ, no duplicates, no internal id leaks, and no separate contract-id field in the dispute modal |

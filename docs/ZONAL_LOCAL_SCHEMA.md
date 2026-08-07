@@ -166,6 +166,37 @@ kmToSlab = !isZonal && !isAdhoc && !rto
 
 ---
 
+## 4b. The vendor action flow — what has to be true for Confirm / Raise Dispute to appear
+
+Three separate gates, each with a different owner. When a vendor says "the buttons are missing", it is
+always one of these:
+
+| Gate | Owner | Symptom when it blocks |
+|---|---|---|
+| `sent_to_vendor_flag = Yes` | menu 4 `transferReadyTrips()` (or the engine) | the trip is not on the panel at all |
+| a sync has run since | menu 3 / 4 → Upstash | the panel shows the *previous* snapshot; the sheet looks right and the panel does not |
+| `vendor_status` is `Pending` or `Reconfirm` | the vendor's own last action | the row shows "Confirmed" / "Disputed" and reads `no action` |
+
+`transferReadyTrips()` stamps four things, flag **last** so a half-written row is retried rather than
+stranded: `dispute_window_end = now + DISPUTE_WINDOW_DAYS` (15), `vendor_status = Pending`,
+`sent_to_vendor_timestamp`, then `sent_to_vendor_flag = Yes`.
+
+**A row that arrives with `sent_to_vendor_flag` already `Yes` is skipped** — correctly, it is already
+transferred — so it never gets a `dispute_window_end` either. Demo/test rows must therefore be pasted with
+`ground_review_deadline`, `sent_to_vendor_flag`, `sent_to_vendor_timestamp`, `vendor_status` and
+`dispute_window_end` all **blank**, and menu 4 left to fill them. `sample-data/zonal_demo_rows.csv` ships
+that way. Paste it pre-flagged and menu 4 reports "0 moved", which reads as a bug and is not one.
+
+**The panel will not offer an action the backend rejects.** `applyDispute()` throws once
+`dispute_window_end` has passed, so the trip row shows a muted *"Dispute window closed"* in place of the
+Raise Dispute link (Confirm stays — confirming has no window). A blank `dispute_window_end` counts as open,
+matching the backend, which only enforces a window it can read. The payload carries the raw timestamp as
+`winTs` next to the display string `win` for exactly this comparison.
+
+**The Action column is pinned to the right edge of the trip table** (`position:sticky`). With ten columns
+it overflows below ~1400px, and before pinning it, Confirm and Raise Dispute scrolled out of sight — the
+vendor could not act at all. Verified visible down to 1152px by `testkit/_uitest.js`.
+
 ## 5. Panel layout
 
 Zonal trips get **one card per `rfq_id`**, built at vendor level, alongside (not inside) the local

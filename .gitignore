@@ -18,3 +18,8 @@ Thumbs.db
 # Kept in the repo folder so every output lives in one place, but NOT pushed to GitHub.
 # Delete this line if you want it committed.
 mockups/FM_Carting_Billing_MIS_prototype.xlsx
+
+# panel test kit
+testkit/node_modules/
+testkit/payload.json
+testkit/*.png
