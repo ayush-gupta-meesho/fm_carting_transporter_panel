@@ -864,12 +864,20 @@ function applyReplacedVehicleValidation() {
   });
 
   var sh = ctx.sh;
+  var scIdx = ctx.idx['route_scope'];
   var firstRow = ctx.headerRow + 2;                 // 1-based first data row
   var lastRow = sh.getLastRow();
-  var applied = 0, cleared = 0;
+  var applied = 0, cleared = 0, skippedZonal = 0;
   for (var r = firstRow; r <= lastRow; r++) {
     var row = ctx.values[r - 1];
     if (!row || !_s(row[tIdx])) continue;           // skip blank rows
+    // Zonal has no vehicle-level mapping, so replaced_default_vehicle is meaningless there. Offering a
+    // dropdown would invite exactly the edit the ZONAL_NOT_EDITABLE guard then strips out.
+    if (scIdx !== undefined && _low(row[scIdx]) === 'zonal') {
+      sh.getRange(r, rIdx + 1).clearDataValidations();
+      skippedZonal++;
+      continue;
+    }
     var cid = _s(row[cIdx]);
     var cell = sh.getRange(r, rIdx + 1);
     var list = cid ? byC[cid] : null;
@@ -887,7 +895,7 @@ function applyReplacedVehicleValidation() {
       cleared++;
     }
   }
-  return 'replaced_default_vehicle_final — dropdown set on ' + applied + ' row(s), cleared on ' + cleared + '.';
+  return 'replaced_default_vehicle_final — dropdown set on ' + applied + ' row(s), cleared on ' + cleared + ', skipped ' + skippedZonal + ' zonal row(s).';
 }
 
 /** Menu wrapper: run the sync on demand and show the result (handy for testing). */

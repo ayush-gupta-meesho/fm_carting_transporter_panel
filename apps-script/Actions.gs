@@ -123,7 +123,8 @@ function applyConfirm(a) {
     var newStatus = isReconf ? 'Reconfirmed' : 'Confirmed';
     _upsertStatusView({
       row_id: rv[ctx.idx['row_id']], trip_id: tid, contract_id: rv[ctx.idx['contract_id']],
-      transporter_oracle_id: a.oracle, sent_to_vendor_timestamp: rv[ctx.idx['sent_to_vendor_timestamp']],
+      transporter_oracle_id: a.oracle, route_scope: _s(rv[ctx.idx['route_scope']]) || 'Local',
+      sent_to_vendor_timestamp: rv[ctx.idx['sent_to_vendor_timestamp']],
       vendor_status: newStatus, dispute_window_end: rv[ctx.idx['dispute_window_end']],
       reconfirm_status: isReconf ? 'Reconfirmed' : '', final_state: newStatus
     });
@@ -163,20 +164,27 @@ function applyDispute(a) {
     claim_billing_type: _s(a.claim_billing_type), claim_aggregate_vehicle: _s(a.claim_aggregate_vehicle),
     claim_km: (a.claim_km === '' || a.claim_km == null) ? '' : a.claim_km,
     claim_amount: (a.claim_amount === '' || a.claim_amount == null) ? '' : a.claim_amount,
+    claim_zonal_amount: (a.claim_zonal_amount === '' || a.claim_zonal_amount == null) ? '' : a.claim_zonal_amount,
+    claim_rfq_id: _s(a.claim_rfq_id),
     claim_contract_id: _s(a.claim_contract_id), vendor_description: _s(a.vendor_description),
     proof_url: _s(a.proof_url), callback_number: _s(a.callback_number),
     // teal (original snapshot from Trip_Level at submit)
     orig_vehicle_number: g('vehicle_number'), orig_vehicle_size: g('vehicle_size'),
-    orig_trip_cluster: g('trip_cluster'), orig_route: origRoute, orig_completed_time: g('trip_end_time'),
+    orig_trip_cluster: g('trip_cluster'), orig_route: origRoute,
+    // scope/RFQ/amount snapshots — without these the dispute card cannot show "was X, you claim Y"
+    orig_route_scope: g('route_scope') || 'Local', orig_rfq_id: g('rfq_id'),
+    orig_completed_time: g('trip_end_time'),
     orig_billing_type: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
     orig_replaced_default_vehicle: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
     orig_total_km: g('total_trip_km'), orig_adhoc_amount: g('adhoc_amount'),
+    orig_zonal_rfq_amount: _s(rv[ctx.idx['zonal_rfq_amount_final']]) || _s(rv[ctx.idx['zonal_rfq_amount']]),
     // red block left blank; initial open status
     dispute_status: 'Open', reconfirm_status: isRedispute ? 'Re-disputed' : ''
   });
 
   _upsertStatusView({
     row_id: g('row_id'), trip_id: a.trip_id, contract_id: g('contract_id'), transporter_oracle_id: a.oracle,
+    route_scope: g('route_scope') || 'Local',
     sent_to_vendor_timestamp: g('sent_to_vendor_timestamp'), vendor_status: 'Disputed',
     dispute_id: disputeId, dispute_status: 'Open', dispute_window_end: g('dispute_window_end'),
     final_state: 'Disputed'
@@ -233,11 +241,25 @@ function transferReadyTrips() {
     // else its KM cannot fold into any default. If incomplete, discard the ground edit and transfer the
     // earlier (system) info instead; the trip still transfers but the ground log is marked partial.
     var _cid = _s(rv[ctx.idx['contract_id']]), _vno = _s(rv[ctx.idx['vehicle_number']]);
+    var _scope  = _s(rv[ctx.idx['route_scope']]) || 'Local';
+    var _isZonal = _low(_scope) === 'zonal';
     var _finalBill = _low(rv[ctx.idx['billing_type_final']]) || _low(rv[ctx.idx['billing_type_system']]);
     var _isDefault = !!(defBy[_cid] && defBy[_cid][_vno]);
     var _replTarget = _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]);
     var _replOK = !!(_replTarget && defBy[_cid] && defBy[_cid][_replTarget]);
-    var _partial = (_finalBill === 'regular' && !_isDefault && !_replOK);
+
+    /* ZONAL GUARD — must run BEFORE the reclassification guard.
+     * Zonal vehicles are not contract defaults by design, so the reclassification guard below would
+     * bounce every single zonal trip to Adhoc and stamp it NEEDS_ATTRIBUTION_FIX. Zonal is therefore
+     * exempt from it. Separately, route_scope and billing on zonal are SYSTEM outcomes: any ground
+     * edit to billing_type_final or replaced_default_vehicle_final is cleared and flagged, so
+     * "zonal adhoc cannot be reverted to Regular" holds in the sheet as well as in the classifier. */
+    var _zonalEdit = false;
+    if (_isZonal) {
+      if (_s(rv[ctx.idx['billing_type_final']])) { _setCell(ctx, i, 'billing_type_final', ''); _zonalEdit = true; }
+      if (_s(rv[ctx.idx['replaced_default_vehicle_final']])) { _setCell(ctx, i, 'replaced_default_vehicle_final', ''); _zonalEdit = true; }
+    }
+    var _partial = (!_isZonal && _finalBill === 'regular' && !_isDefault && !_replOK);
     if (_partial) {
       if (_s(rv[ctx.idx['billing_type_final']])) _setCell(ctx, i, 'billing_type_final', '');
       if (_s(rv[ctx.idx['replaced_default_vehicle_final']])) _setCell(ctx, i, 'replaced_default_vehicle_final', '');
@@ -248,16 +270,20 @@ function transferReadyTrips() {
     var _isAdhocBucket = _cid.toUpperCase().indexOf('ADHOC') === 0;
     var _home = vehHome[_vno] || '';
     var _flagAttr = _partial && (_isAdhocBucket || (_home && _home !== _cid));
-    var _actionState = _flagAttr ? 'NEEDS_ATTRIBUTION_FIX' : (groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION');
-    var _dataSent = _flagAttr
-      ? ('ATTRIBUTION_FIX: Regular set on ' + _cid + (_home ? (' \u2014 vehicle ' + _vno + ' is a default of ' + _home + '; set contract_id to it') : ' \u2014 vehicle is not a default of any contract'))
-      : (_partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL'));
+    var _actionState = _zonalEdit ? 'ZONAL_NOT_EDITABLE'
+      : (_flagAttr ? 'NEEDS_ATTRIBUTION_FIX' : (groundConfirmed ? 'GROUND_CONFIRMED' : 'NO_GROUND_ACTION'));
+    var _dataSent = _zonalEdit
+      ? ('ZONAL_NOT_EDITABLE: route_scope=Zonal on ' + _cid + ' \u2014 billing type and replacement vehicle are system outcomes on zonal trips and were cleared. Fix the classification in the data engine, not in the sheet.')
+      : (_flagAttr
+        ? ('ATTRIBUTION_FIX: Regular set on ' + _cid + (_home ? (' \u2014 vehicle ' + _vno + ' is a default of ' + _home + '; set contract_id to it') : ' \u2014 vehicle is not a default of any contract'))
+        : (_partial ? 'SYSTEM_ORIGINAL (incomplete reclassification)' : (groundConfirmed ? 'GROUND_FINAL' : 'SYSTEM_ORIGINAL')));
 
     // Ground_Confirmation_Log FIRST → a log failure leaves the trip un-transferred / retryable
     _appendByHeaders(LOG_TABS.ground, 'log_id', {
       log_id: 'GCL-' + Utilities.formatDate(now, _tz(), 'yyyyMMddHHmmss') + '-' + i,
       row_id: _s(rv[ctx.idx['row_id']]), trip_id: _s(rv[ctx.idx['trip_id']]),
       contract_id: _s(rv[ctx.idx['contract_id']]), transporter_oracle_id: _s(rv[ctx.idx['transporter_oracle_id']]),
+      route_scope: _scope,
       trip_end_time: _s(rv[ctx.idx['trip_end_time']]), ground_review_deadline: iso(dl),
       sent_to_vendor_timestamp: ts,
       ground_action_state: _actionState,
@@ -265,7 +291,7 @@ function transferReadyTrips() {
       replaced_vehicle_before: _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       replaced_vehicle_after: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       data_sent: _dataSent,
-      partial_edit_flag: _partial ? 'Yes' : 'No'
+      partial_edit_flag: (_partial || _zonalEdit) ? 'Yes' : 'No'
     });
 
     // open the vendor dispute window (if not already set) + default status
@@ -331,6 +357,8 @@ function _applyResolvedRows(rows) {
     setDL('resolved_billing_type', get(r, 'resolved_billing_type'));
     setDL('resolved_km', get(r, 'resolved_km'));
     setDL('resolved_amount', get(r, 'resolved_amount'));
+    setDL('resolved_zonal_amount', get(r, 'resolved_zonal_amount'));
+    setDL('resolved_rfq_id', get(r, 'resolved_rfq_id'));
     setDL('resolved_aggregate_vehicle', get(r, 'resolved_aggregate_vehicle'));
     setDL('resolved_contract_id', get(r, 'resolved_contract_id'));
     _setCell(dl, dr, 'resolved_at', now);
@@ -342,16 +370,29 @@ function _applyResolvedRows(rows) {
     var tr = _findRowIndex(tl, 'trip_id', tripId);
     if (tr >= 0) {
       var ow = function (tlCol, v) { if (v !== '') _setCell(tl, tr, tlCol, v); };
-      ow('billing_type_final', get(r, 'resolved_billing_type'));
-      ow('total_trip_km', get(r, 'resolved_km'));
-      ow('adhoc_amount', get(r, 'resolved_amount'));
-      ow('replaced_default_vehicle_final', get(r, 'resolved_aggregate_vehicle'));
+      /* A resolution is the ONLY path allowed to change a zonal amount, and it must not become a back
+       * door into the rules the ZONAL_NOT_EDITABLE guard closes. On a zonal trip, billing type, KM and
+       * replacement vehicle are system outcomes (no slab, no vehicle mapping), so those three are
+       * ignored here however the resolution CSV is filled in. */
+      var _rz = _low(_s(tl.values[tr][tl.idx['route_scope']]) || 'Local') === 'zonal';
+      if (_rz) {
+        ow('zonal_rfq_amount_final', get(r, 'resolved_zonal_amount'));
+        if (get(r, 'resolved_billing_type') || get(r, 'resolved_km') || get(r, 'resolved_aggregate_vehicle')) {
+          notes.push('ZONAL ' + tripId + ': ignored resolved_billing_type / resolved_km / resolved_aggregate_vehicle (system-owned on zonal)');
+        }
+      } else {
+        ow('billing_type_final', get(r, 'resolved_billing_type'));
+        ow('total_trip_km', get(r, 'resolved_km'));
+        ow('adhoc_amount', get(r, 'resolved_amount'));
+        ow('replaced_default_vehicle_final', get(r, 'resolved_aggregate_vehicle'));
+      }
       ow('contract_id', get(r, 'resolved_contract_id'));
       _setCell(tl, tr, 'vendor_status', 'Reconfirm');   // re-surface to vendor
       _upsertStatusView({
         row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
         contract_id: _s(tl.values[tr][tl.idx['contract_id']]),
         transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
+        route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
         vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
         reconfirm_status: 'Pending Reconfirmation', final_state: 'Pending Reconfirmation'
       });
@@ -391,16 +432,26 @@ function applyResolutionsFromSheet() {
     var tr = _findRowIndex(tl, 'trip_id', tripId);
     if (tr < 0) { notes.push('no Trip_Level row for ' + tripId + ' (' + did + ')'); applied++; continue; }
     var ow = function (tlCol, v) { if (v !== '') _setCell(tl, tr, tlCol, v); };
-    ow('billing_type_final', val(i, 'resolved_billing_type'));
-    ow('total_trip_km', val(i, 'resolved_km'));
-    ow('adhoc_amount', val(i, 'resolved_amount'));
-    ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));
+    // same zonal gate as the CSV importer — see the comment there
+    var _rz2 = _low(_s(tl.values[tr][tl.idx['route_scope']]) || 'Local') === 'zonal';
+    if (_rz2) {
+      ow('zonal_rfq_amount_final', val(i, 'resolved_zonal_amount'));
+      if (val(i, 'resolved_billing_type') || val(i, 'resolved_km') || val(i, 'resolved_aggregate_vehicle')) {
+        notes.push('ZONAL ' + tripId + ': ignored resolved_billing_type / resolved_km / resolved_aggregate_vehicle (system-owned on zonal)');
+      }
+    } else {
+      ow('billing_type_final', val(i, 'resolved_billing_type'));
+      ow('total_trip_km', val(i, 'resolved_km'));
+      ow('adhoc_amount', val(i, 'resolved_amount'));
+      ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));
+    }
     ow('contract_id', val(i, 'resolved_contract_id'));
     _setCell(tl, tr, 'vendor_status', 'Reconfirm');                        // re-surface to vendor
     _upsertStatusView({
       row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
       contract_id: _s(tl.values[tr][tl.idx['contract_id']]),
       transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
+      route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
       vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
       reconfirm_status: 'Pending Reconfirmation', final_state: 'Pending Reconfirmation'
     });

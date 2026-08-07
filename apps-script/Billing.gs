@@ -311,31 +311,74 @@ function _vmLocal(ss, m) {
   sh.setFrozenRows(2);
 }
 
-/* ---------- ZONAL ---------- */
+/* ---------- ZONAL: grouped by RFQ id ---------- */
 function _vmZonal(ss, m) {
   var sh = ss.insertSheet('Zonal');
-  var NC = 9;
-  var W = [90, 150, 150, 120, 56, 190, 190, 84, 110];
+  var NC = 10;
+  var W = [80, 150, 116, 56, 200, 190, 88, 74, 100, 96];
   for (var i = 0; i < W.length; i++) sh.setColumnWidth(i + 1, W[i]);
-  _vmHead(sh, NC, m.vendorName + '  ·  Zonal trips',
-          'Paid at a fixed amount per trip from the zonal RFQ  ·  not part of any KM slab');
+  _vmHead(sh, NC, m.vendorName + '  \u00B7  Zonal trips',
+          'Paid at a fixed amount per trip from the zonal RFQ  \u00B7  not part of any KM slab');
 
-  var r = 4;
-  _vmHdr(sh, r, ['Date', 'Trip id', 'RFQ id', 'Vehicle', 'Size', 'Planned route', 'Actual route',
-                 'Type', 'Amount']); r++;
-  var rows = (m.zonal && m.zonal.rows) || [];
-  if (!rows.length) { _vmNote(sh, r, NC, 'no zonal trips in this period'); sh.setFrozenRows(4); return; }
-
-  var body = rows.map(function (z) {
-    return [z.date, z.tripId, z.rfqId, z.no, z.size, z.planned, z.actual, z.billing, z.amt];
+  /* Rows come from Trip_Level per contract. The legacy paste block is used only while Trip_Level
+     carries no zonal rows, so the two sources can never both contribute. */
+  var rows = [];
+  m.contracts.forEach(function (c) {
+    (c.zonalRows || []).forEach(function (z) { z._cid = c.cid; rows.push(z); });
   });
-  sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
-  sh.getRange(r, 9, body.length, 1).setNumberFormat(FMT_MONEY);
-  r += body.length;
-  sh.getRange(r, 8).setValue('TOTAL').setFontWeight('bold');
-  sh.getRange(r, 9).setFormula('=SUM(I' + (r - body.length) + ':I' + (r - 1) + ')')
-    .setFontWeight('bold').setNumberFormat(FMT_MONEY);
+  if (!rows.length && m.zonal && m.zonal.rows) {
+    rows = m.zonal.rows.map(function (z) {
+      return { id: z.tripId, date: z.date, no: z.no, size: z.size, rfq: z.rfqId,
+               route: z.actual || z.planned, billing: z.billing, rto: !!z.rto,
+               amt: z.amt, status: z.status || '', challan: '', _cid: z.contractId || '' };
+    });
+  }
+  if (!rows.length) { _vmNote(sh, 4, NC, 'no zonal trips in this period'); sh.setFrozenRows(4); return; }
+
+  // group by RFQ id — this is what separates the migration set from the standard one
+  var byRfq = {}, order = [];
+  rows.forEach(function (z) {
+    var k = z.rfq || '(no RFQ id)';
+    if (!byRfq[k]) { byRfq[k] = []; order.push(k); }
+    byRfq[k].push(z);
+  });
+  order.sort();
+
+  var r = 4, grand = 0;
+  order.forEach(function (k) {
+    var g = byRfq[k];
+    var sub = g.reduce(function (t, z) { return t + (z.amt || 0); }, 0);
+    grand += sub;
+    _vmBand(sh, r, NC, 'RFQ  ' + k + '   \u00B7   ' + g.length + ' trip' + (g.length > 1 ? 's' : '')); r++;
+    _vmHdr(sh, r, ['Date', 'Trip id', 'Vehicle', 'Size', 'Route', 'Contract', 'Challan type',
+                   'Type', 'Status', 'Amount']); r++;
+    var first = r;
+    var body = g.sort(function (x, y) { return String(x.date) < String(y.date) ? -1 : 1; })
+      .map(function (z) {
+        return [z.date, z.id, z.no, z.size, z.route, z._cid || '', z.challan || '',
+                z.billing + (z.rto ? ' · RTO' : ''), z.status || '', z.amt || 0];
+      });
+    sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
+    sh.getRange(r, 10, body.length, 1).setNumberFormat(FMT_MONEY);
+    g.forEach(function (z, i) {
+      if (z.rto) sh.getRange(r + i, 8).setFontColor('#9C0006');
+      var st = _low(z.status);
+      if (st && st !== 'confirmed' && st !== 'reconfirmed') sh.getRange(r + i, 9).setBackground(C_AMBER);
+    });
+    r += body.length;
+    sh.getRange(r, 9).setValue('RFQ TOTAL').setFontWeight('bold');
+    sh.getRange(r, 10).setFormula('=SUM(J' + first + ':J' + (r - 1) + ')')
+      .setFontWeight('bold').setNumberFormat(FMT_MONEY);
+    sh.getRange(r, 1, 1, NC).setBackground(C_LBLUE);
+    r += 2;
+  });
+
+  sh.getRange(r, 9).setValue('TOTAL ZONAL').setFontSize(12).setFontWeight('bold');
+  sh.getRange(r, 10).setValue(grand).setFontSize(12).setFontWeight('bold').setNumberFormat(FMT_MONEY);
   sh.getRange(r, 1, 1, NC).setBackground(C_GREEN);
+  r += 2;
+  _vmNote(sh, r, NC, 'Each zonal trip is paid a fixed amount from its RFQ. Zonal KM is not added to any '
+    + 'contract KM slab. An RTO zonal trip is shown for your records and is not payable.');
   sh.setFrozenRows(4);
 }
 
@@ -418,9 +461,9 @@ function _vmSummary(ss, m) {
     body.push(['Other adhoc trips (no contract)', '—', '', '', '', '', '', 0, 0,
                m.bucket.adhocAmt, 0, m.bucket.adhocAmt]);
   }
-  var zTot = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
+  var zTot = m.totals.zonal;
   if (zTot) {
-    body.push(['Zonal trips — ' + m.zonal.rows.length + ' trip(s), fixed amount per trip from the RFQ',
+    body.push(['Zonal trips — ' + m.totals.zonalTrips + ' trip(s), fixed amount per trip from the RFQ',
                '—', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
   }
   sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
@@ -516,7 +559,29 @@ function _misReadSource() {
   // Zonal is read ONCE here, keyed by oracle, so every consumer gets it automatically.
   // It lives in _misReadSource on purpose: Cost_View_All previously omitted zonal entirely because
   // populating model.zonal was left to the caller and only two of four callers did it.
-  var zAll = _misReadZonalAll();
+  /* Zonal now lives in Trip_Level (route_scope = Zonal), so it is derived from the same rows every
+     other number comes from — one source, one classifier. The manual paste tab is kept ONLY as a
+     fallback for the transition: if Trip_Level carries no zonal rows yet, we still read the paste.
+     Once the engine writes route_scope this branch stops being used and the tab becomes an output. */
+  var zAll = {}, zFromTrips = 0;
+  tl.forEach(function (t) {
+    if (_low(_s(t.route_scope) || 'Local') !== 'zonal') return;
+    var orc = _s(t.transporter_oracle_id);
+    if (excl[_low(orc)] || !byOracle[orc]) return;
+    var x = _classifyTrip(t, {}, 'Regular');
+    if (!zAll[orc]) zAll[orc] = _misZonalEmpty();
+    var z = zAll[orc];
+    z.rows.push({ tripId: _s(t.trip_id), rfqId: _s(t.rfq_id), no: x.no,
+      size: _s(t.vehicle_size), haul: '', date: _misDate(t.trip_date),
+      planned: '', actual: _buildRoute(t).join(' \u2192 '),
+      billing: x.isAdhoc ? 'Adhoc' : 'Regular', rto: x.rto,
+      contractId: _s(t.contract_id), status: _s(t.vendor_status),
+      amt: x.payable });                       // payable is RTO-aware: an RTO zonal trip is worth 0
+    if (x.isAdhoc) { z.adhocN++; z.adhocAmt += x.payable; }
+    else           { z.regN++;   z.regAmt   += x.payable; }
+    zFromTrips++;
+  });
+  if (!zFromTrips) zAll = _misReadZonalAll();      // nothing in Trip_Level yet -> legacy paste tab
   // Re-key zonal onto the oracle strings Contract_Info actually uses, and park anything that matches
   // no vendor so it is visible instead of silently worth zero.
   var zonal = {}, zonalOrphans = [];
@@ -586,8 +651,13 @@ function buildBillingModel(oracle, d) {
     var cid  = _s(c.contract_id);
     var defs = d.vehs[cid] || [];
     var dset = d.defSet[cid] || {};
-    var cTrips = (d.trips[cid] || []);      // contract_id scopes the period — never date-filter here,
-                                            // or the MIS would silently disagree with the panel
+    /* contract_id scopes the period — never date-filter here, or the MIS would silently disagree
+       with the panel. Zonal is split out: it never reaches a slab, a vehicle row or a utilisation %. */
+    var _allT = (d.trips[cid] || []);
+    var cTrips = [], zTripsC = [];
+    _allT.forEach(function (t) {
+      if (_low(_s(t.route_scope) || 'Local') === 'zonal') zTripsC.push(t); else cTrips.push(t);
+    });
 
     var slabCV = 0, fixedCV = 0;
     var vehSlab = {}, vehDates = {};
@@ -692,6 +762,23 @@ function buildBillingModel(oracle, d) {
       return { no: no, ownKm: ownKm[no] || 0, trips: tripsN[no] || 0 };
     });
 
+    /* zonal for THIS contract, grouped by rfq_id (decision 7 — the MIG- set separates naturally) */
+    var zAmt = 0, zAdhoc = 0, zN = 0, zRfq = {}, zRfqOrder = [], zRows = [];
+    zTripsC.forEach(function (t) {
+      var zx = _classifyTrip(t, dset, 'Regular');
+      zN++;
+      var rec = { id: _s(t.trip_id), date: _misDate(t.trip_date), no: zx.no,
+        size: _s(t.vehicle_size) || _s(c.vehicle_size), rfq: zx.rfqId,
+        route: _buildRoute(t).join(' \u2192 '), billing: zx.billing, rto: zx.rto,
+        amt: zx.payable, status: _s(t.vendor_status),
+        challan: _s(t.challan_type_final) || _s(t.challan_type) };
+      zRows.push(rec);
+      if (zx.isAdhoc) zAdhoc += zx.payable; else zAmt += zx.payable;
+      var k = zx.rfqId || '(no RFQ id)';
+      if (!zRfq[k]) { zRfq[k] = { rfq: k, trips: 0, amt: 0 }; zRfqOrder.push(k); }
+      zRfq[k].trips++; zRfq[k].amt += zx.payable;
+    });
+
     var slabCI  = _num(c.total_km_slab);
     var fixedCI = _num(c.fixed_monthly_value);
     var exRate  = _num(c.ex_km_rate);
@@ -713,6 +800,8 @@ function buildBillingModel(oracle, d) {
       adhocTrips: adhocTrips, rtoTrips: rtoTrips,
       nearMiss: Object.keys(nearMiss).map(function (k) { return nearMiss[k]; }),
       outOfPeriod: outOfPeriod,
+      zonalTrips: zN, zonalAmt: zAmt, zonalAdhoc: zAdhoc, zonalRows: zRows,
+      zonalRfq: zRfqOrder.map(function (k) { return zRfq[k]; }),
       unattrKm: unattr.reduce(function (s, u) { return s + u.km; }, 0),
       isBucket: false
     });
@@ -749,14 +838,21 @@ function buildBillingModel(oracle, d) {
 
 function _misTotals(m) {
   var t = { slab: 0, regKm: 0, pendKm: 0, excessKm: 0, excessAmt: 0, fixed: 0,
-            adhoc: 0, adhocPend: 0, zonal: 0, unattrKm: 0, payable: 0 };
+            adhoc: 0, adhocPend: 0, zonal: 0, zonalTrips: 0, unattrKm: 0, payable: 0 };
+  var zFromContracts = 0, zTripCount = 0;
   m.contracts.forEach(function (c) {
     t.slab += c.slabCV; t.regKm += c.regKm; t.pendKm += c.pendKm;
     t.excessKm += c.excessKm; t.excessAmt += c.excessAmt; t.fixed += c.fixedCV;
     t.adhoc += c.adhocAmt; t.adhocPend += c.adhocPend; t.unattrKm += c.unattrKm;
+    zFromContracts += (c.zonalAmt || 0) + (c.zonalAdhoc || 0);
+    zTripCount += (c.zonalTrips || 0);
   });
   if (m.bucket) t.adhoc += m.bucket.adhocAmt;
-  t.zonal   = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
+  /* Prefer the per-contract figure (Trip_Level). Fall back to the vendor-level paste only while
+     Trip_Level has no zonal rows, so the two can never be double-counted. */
+  var zFromPaste = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
+  t.zonal      = zTripCount ? zFromContracts : zFromPaste;
+  t.zonalTrips = zTripCount || ((m.zonal.rows || []).length);
   t.payable = t.fixed + t.excessAmt + t.adhoc + t.zonal;
   return t;
 }
@@ -1030,14 +1126,14 @@ function _misWriteCostViewAll(mis, d) {
                     null, 0, m.bucket.adhocAmt, 0, null, 0, 0, 0, 'n/a']);
       meta.push(true);
     }
-    // Match on the numeric-or-text form as pasted. SUMIFS coerces, so a bare number and its text
-    // form both match; _misOrcKey covers the model side.
-    var zk = _misOrcKey(o);
-    var zc = "COUNTIFS('" + MIS.zonal + "'!$A$4:$A$5000,\"" + zk + "\")";
-    var za = "SUMIFS('" + MIS.zonal + "'!$Q$4:$Q$5000,'" + MIS.zonal + "'!$A$4:$A$5000,\"" + zk + "\")";
-    rowsOut.push(['', 'Zonal trips — fixed per trip (RFQ)', m.vendorName, '—', '=' + zc,
-                  0, 0, null, 0, null, 0, 0, '=' + za, null, 0, 0, 0, 'n/a']);
-    meta.push(true);
+    /* Zonal comes from Trip_Level now, so this is a computed value rather than a SUMIFS against the
+       paste tab. One row per vendor: zonal is priced per trip and belongs to the vendor, not to any
+       single contract's slab. */
+    if (m.totals.zonal) {
+      rowsOut.push(['', 'Zonal trips — fixed per trip (RFQ)', m.vendorName, '—', m.totals.zonalTrips,
+                    0, 0, null, 0, null, 0, 0, m.totals.zonal, null, 0, 0, 0, 'n/a']);
+      meta.push(true);
+    }
   });
   rowsOut.sort(function (a, b) { return String(a[1]) < String(b[1]) ? -1 : 1; });
 
