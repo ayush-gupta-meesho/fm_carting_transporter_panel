@@ -381,3 +381,120 @@ Also this round:
   rather than a bevel.
 
 Harness totals: **_apitest 19 · _uitest 207 · _billtest 22.**
+
+### Zonal adhoc has no RFQ id — and that must not read as a missing value — 2026-08-07
+Ayush: *"Zonal Adhoc Trips will have no RFQ id attached to it. How are we handling it?"* Correctly the
+answer was: badly, in three places, because the RFQ-as-contract-reference work treated all zonal alike.
+
+A zonal **Regular** trip bills at its RFQ rate, so `rfq_id` is its billing reference. A zonal **Adhoc**
+trip bills on `adhoc_amount` — **no RFQ rate applies, so `rfq_id` is blank by design.** With the demo data
+carrying an RFQ on adhoc rows, none of this surfaced. Blanking them (matching production) exposed it:
+
+1. **The MIS invented a phantom RFQ line.** `_misZonalRfq()` grouped on `rfq_id || '(no RFQ id)'`, so every
+   adhoc trip collapsed into a Summary line reading `Zonal RFQ (no RFQ id)`. Adhoc now collects into a
+   single trailing group flagged `isAdhoc`, rendered as **"Zonal adhoc trips — N trip(s), billed on amount
+   (no RFQ rate applies)"**. The Zonal tab bands it separately too, always last, with an `ADHOC TOTAL`.
+2. **The new gate would have WARNed forever.** "Every zonal trip carries an RFQ ID" counted adhoc rows as
+   missing values. It is now **"Every zonal REGULAR trip carries an RFQ ID"**. Scoping it is not a
+   softening — a warning that is always on is a warning nobody reads.
+3. **The panel offered a dispute category with nothing behind it.** A zonal adhoc trip was shown
+   "Wrong RFQ ID" with `Current RFQ ID: — not set —` and a required input. The category is now withheld
+   when a zonal adhoc trip has no `rfq_id`, and the amount panel explains why: *"billed on its amount, not
+   on an RFQ rate, so it carries no RFQ ID."*
+
+Also: the Contract / RFQ ID column reads **`Zonal adhoc`** on those rows rather than `(no RFQ id)`, and
+`_billRef()` writes the same into the log tabs. `(no RFQ id)` is now reserved for the one case that really
+is a data problem — a zonal **Regular** trip with no RFQ.
+
+**All of it keys off "is the rfq_id actually there", not a hard-coded assumption**, so if the engine does
+stamp an RFQ on an adhoc trip, the column, the band and the dispute category all come back.
+
+Harnesses: **_apitest 19 · _uitest 213 · _billtest 30.** The demo data now blanks `rfq_id` on every zonal
+adhoc row, and `_billtest` asserts both directions — the gate stays clear with 3 RFQ-less adhoc rows, and
+still fires when a zonal *Regular* row loses its RFQ.
+
+## Closing two dead-end dispute loops — 2026-08-07
+Ayush asked two questions that both turned out to be real holes, confirmed by running the classifier
+rather than reading it (`testkit/_resolvetest.js`).
+
+### 1. "How can a zonal Regular be disputed to zonal Adhoc?"
+It could be raised and logged, and **nothing could action it** — the appliers ignored
+`resolved_billing_type` on zonal, yet still flipped `vendor_status` to `Reconfirm`, telling the vendor it
+was "Resolved" over a trip that had not changed.
+
+**Decision (Ayush): an upheld resolution flips it, and the trip pays `adhoc_amount`.**
+
+Implemented through a **new column, `billing_type_resolved`** — not `billing_type_final`. I tried sharing
+`_final` first and the MIS harness caught it immediately: `TR-ZT-0006` carries a ground
+`billing_type_final = Regular` (the deliberate rule-(iii) test row), and sharing the column moved **₹4,800**
+and dropped the zonal total from ₹47,100 to ₹42,300. `_final` is a *ground* column; the `ZONAL_NOT_EDITABLE`
+guard only runs at transfer, so any row the engine flags directly would bypass it. Two authorities need two
+columns:
+
+```
+zonal :  billing_type_resolved || billing_type_system     // ground's _final still ignored
+local :  billing_type_final    || billing_type_system     // unchanged
+```
+
+**Plus a money guard.** The engine populates `adhoc_amount` on every trip, so a flip normally has a value
+to land on and this guard never fires. It is there for the case where it does not: the applier **refuses** a
+flip to Adhoc when both `resolved_amount` and the existing `adhoc_amount` are empty, and logs why, rather
+than silently turning a ₹5,300 trip into a ₹0 one. (I first read the blank `adhoc_amount` on the demo
+fixture's zonal Regular rows as a production fact — Ayush corrected it. The guard is worth keeping on its
+own merits; the demo fixture is simply what it is tested against.)
+
+### 2. "How can a person ask for the amount/KM on an RTO trip?"
+They could ask, and it could never work. `payable = rto ? 0 : …` and `km = rto ? 0 : km` are applied
+*before* any resolved value, so writing `zonal_rfq_amount_final` or `total_trip_km` on an RTO trip is a
+**no-op** — proven by execution, both scopes. `challan_type_final` is the only lever that clears RTO and
+nothing in the panel, the API or the appliers could write it. (Its being blank across the sheet is correct
+— it is an override column and blank is its resting state. The gap was the missing write path, not the
+empty column.)
+
+**Decision (Ayush): build it, but do not surface it as a separate "Not an RTO trip" category — the vendor
+just claims the KM/amount.** So: on an RTO trip the ordinary Wrong KM / Amount panel explains that entering
+a value is also a claim that this was not an RTO, and posts `claim_challan_type = 'Forward Only'` alongside
+it. Ops answers with `resolved_challan_type`, which writes `challan_type_final` on **both** scopes — a
+challan is a fact about the trip, not a classification the engine owns. Everything else follows through the
+shared classifier.
+
+Proven: zonal RTO ₹0 → ₹5,300 · local RTO 180 km enters the slab · local Adhoc RTO recovers ₹4,944 · and
+writing the amount alone still changes nothing, which is what made the old path dead.
+
+**Schema: 4 new columns.** `Trip_Level.billing_type_resolved`, and `Disputes_Log.claim_challan_type` /
+`orig_challan_type` / `resolved_challan_type`.
+
+Harnesses: **_apitest 22 · _uitest 225 · _billtest 30 · _resolvetest 15 (new).** `_resolvetest.js` runs the
+real classifier over the sheet state each resolution would produce, and asserts both that the loop closes
+*and* that ground is still locked out.
+
+### `billing_type_resolved` made universal — 2026-08-07
+Ayush: *"are we sure that is universally applicable both for local/zonal trips?"* It was not. Local
+resolutions still wrote `billing_type_final` while zonal wrote `billing_type_resolved` — one
+`resolved_billing_type` column in `Disputes_Log` landing in two different `Trip_Level` columns depending
+on the trip's scope. Anyone reading `Trip_Level` would have had to check the scope first to know which
+column carried the answer.
+
+Now there is **one precedence, both scopes**:
+
+```
+billing = billing_type_resolved                       // resolution appliers only, BOTH scopes
+       || (zonal ? '' : billing_type_final)           // ground — LOCAL only (rule iii)
+       || billing_type_system                         // the engine
+```
+
+Both appliers write `billing_type_resolved` on both scopes. Ground keeps `billing_type_final` and still
+reclassifies local trips exactly as before; a resolution simply outranks it. The only scope-dependent term
+is ground's, and rule (iii) is now one skipped term in a single expression rather than two divergent ones.
+
+Backwards compatible: `billing_type_final` is still read on local, so any local resolution already applied
+under the old rule keeps working.
+
+**Plus a new guard.** A resolution cannot predate a dispute, and a dispute cannot predate the transfer. So
+`transferReadyTrips()` now clears any `billing_type_resolved` found on a row that has never been sent to a
+vendor — on both scopes — sets `partial_edit_flag = Yes` and says so in
+`Ground_Confirmation_Log.data_sent`. A hand-typed cell must never outrank the engine.
+
+Harnesses: **_apitest 22 · _uitest 225 · _billtest 30 · _resolvetest 21 · _flowtest 10.** `_resolvetest`
+gained a local block asserting the full precedence chain in both directions — ground still works on local,
+a resolution outranks it, and on zonal ground is skipped in the identical expression.

@@ -330,26 +330,35 @@ function _vmZonal(ss, m) {
   if (!rows.length) { _vmNote(sh, 4, NC, 'no zonal trips in this period'); sh.setFrozenRows(4); return; }
 
   // group by RFQ id — this is what separates the migration set from the standard one
+  /* Band by RFQ for Regular trips. Adhoc has no RFQ rate by design, so it bands on its own at the end
+     rather than under a "(no RFQ id)" heading that would read like missing data. */
+  var ADHOC_BAND = 'Zonal adhoc \u2014 billed on amount, no RFQ rate';
   var byRfq = {}, order = [];
   rows.forEach(function (z) {
-    var k = z.rfq || '(no RFQ id)';
+    var k = (_low(z.billing) === 'adhoc' && !z.rfq) ? ADHOC_BAND : (z.rfq || '(no RFQ id)');
     if (!byRfq[k]) { byRfq[k] = []; order.push(k); }
     byRfq[k].push(z);
   });
-  order.sort();
+  order.sort(function (a, b) {                       // adhoc always last
+    if (a === ADHOC_BAND) return 1;
+    if (b === ADHOC_BAND) return -1;
+    return a < b ? -1 : (a > b ? 1 : 0);
+  });
 
   var r = 4, grand = 0;
   order.forEach(function (k) {
     var g = byRfq[k];
     var sub = g.reduce(function (t, z) { return t + (z.amt || 0); }, 0);
     grand += sub;
-    _vmBand(sh, r, NC, 'RFQ  ' + k + '   \u00B7   ' + g.length + ' trip' + (g.length > 1 ? 's' : '')); r++;
+    _vmBand(sh, r, NC, (k === ADHOC_BAND ? k : ('RFQ  ' + k))
+      + '   \u00B7   ' + g.length + ' trip' + (g.length > 1 ? 's' : '')); r++;
     _vmHdr(sh, r, ['Date', 'Trip id', 'Vehicle', 'Size', 'Route', 'RFQ ID (contract ref)',
                    'Challan type', 'Type', 'Status', 'Amount']); r++;
     var first = r;
     var body = g.sort(function (x, y) { return String(x.date) < String(y.date) ? -1 : 1; })
       .map(function (z) {
-        return [z.date, z.id, z.no, z.size, z.route, z.rfq || '(no RFQ id)', z.challan || '',
+        return [z.date, z.id, z.no, z.size, z.route,
+                z.rfq || (_low(z.billing) === 'adhoc' ? 'Zonal adhoc' : '(no RFQ id)'), z.challan || '',
                 z.billing + (z.rto ? ' · RTO' : ''), z.status || '', z.amt || 0];
       });
     sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
@@ -360,7 +369,7 @@ function _vmZonal(ss, m) {
       if (st && st !== 'confirmed' && st !== 'reconfirmed') sh.getRange(r + i, 9).setBackground(C_AMBER);
     });
     r += body.length;
-    sh.getRange(r, 9).setValue('RFQ TOTAL').setFontWeight('bold');
+    sh.getRange(r, 9).setValue(k === ADHOC_BAND ? 'ADHOC TOTAL' : 'RFQ TOTAL').setFontWeight('bold');
     sh.getRange(r, 10).setFormula('=SUM(J' + first + ':J' + (r - 1) + ')')
       .setFontWeight('bold').setNumberFormat(FMT_MONEY);
     sh.getRange(r, 1, 1, NC).setBackground(C_LBLUE);
@@ -463,11 +472,16 @@ function _vmSummary(ss, m) {
   var zGroups = (m.zonal && m.zonal.rfqGroups) || [];
   if (zGroups.length) {
     zGroups.forEach(function (g) {
-      body.push(['Zonal RFQ  ' + g.rfq + '  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's'),
-                 '\u2014', '', '', '', '', '', 0, 0, 0, g.amt, g.amt]);
+      var label = g.isAdhoc
+        ? ('Zonal adhoc trips  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's')
+           + ', billed on amount (no RFQ rate applies)')
+        : ('Zonal RFQ  ' + g.rfq + '  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's'));
+      body.push([label, '\u2014', '', '', '', '', '', 0, 0, 0, g.amt, g.amt]);
     });
-    body.push(['Zonal subtotal \u2014 ' + m.totals.zonalTrips + ' trip(s) across ' + zGroups.length
-               + ' RFQ' + (zGroups.length === 1 ? '' : 's') + ', fixed amount per trip',
+    var _nRfq = zGroups.filter(function (g) { return !g.isAdhoc; }).length;
+    body.push(['Zonal subtotal \u2014 ' + m.totals.zonalTrips + ' trip(s) across ' + _nRfq
+               + ' RFQ' + (_nRfq === 1 ? '' : 's')
+               + (zGroups.length > _nRfq ? ' plus adhoc' : ''),
                '\u2014', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
   } else if (zTot) {
     body.push(['Zonal trips \u2014 ' + m.totals.zonalTrips + ' trip(s), fixed amount per trip from the RFQ',
@@ -623,17 +637,29 @@ function _misZonalEmpty() { return { regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0,
    (decision 2026-08-07), so this is the zonal equivalent of "per contract" and it drives both the
    Summary lines and the Zonal tab bands. */
 function _misZonalRfq(z) {
-  var g = {}, order = [];
+  /* A zonal REGULAR trip bills at its RFQ rate, so rfq_id is its billing reference and it gets a line.
+     A zonal ADHOC trip bills on its amount and has NO rfq_id by design — it is not an RFQ line, it is not
+     a missing value, and it must not be gated as one. Adhoc is collected into a single trailing group
+     flagged isAdhoc, so the Summary can label it "billed on amount" instead of inventing an RFQ. */
+  var g = {}, order = [], ad = { rfq: 'Zonal adhoc trips', trips: 0, amt: 0, regN: 0, regAmt: 0,
+                                 adhocN: 0, adhocAmt: 0, isAdhoc: true, rfqsSeen: {} };
   (z.rows || []).forEach(function (row) {
+    var isAd = _low(row.billing) === 'adhoc';
+    var amt  = row.amt || 0;
+    if (isAd) {
+      ad.trips++; ad.amt += amt; ad.adhocN++; ad.adhocAmt += amt;
+      if (_s(row.rfqId)) ad.rfqsSeen[_s(row.rfqId)] = 1;   // kept if the engine happens to stamp one
+      return;
+    }
     var k = _s(row.rfqId) || '(no RFQ id)';
-    if (!g[k]) { g[k] = { rfq: k, trips: 0, amt: 0, regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0 }; order.push(k); }
+    if (!g[k]) { g[k] = { rfq: k, trips: 0, amt: 0, regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0, isAdhoc: false }; order.push(k); }
     var e = g[k];
-    e.trips++; e.amt += (row.amt || 0);
-    if (_low(row.billing) === 'adhoc') { e.adhocN++; e.adhocAmt += (row.amt || 0); }
-    else                               { e.regN++;   e.regAmt   += (row.amt || 0); }
+    e.trips++; e.amt += amt; e.regN++; e.regAmt += amt;
   });
   order.sort();
-  return order.map(function (k) { return g[k]; });
+  var out = order.map(function (k) { return g[k]; });
+  if (ad.trips) { ad.rfqs = Object.keys(ad.rfqsSeen); delete ad.rfqsSeen; out.push(ad); }
+  return out;
 }
 
 /**
@@ -994,9 +1020,13 @@ function runGates(model, d) {
 
   /* rfq_id is the contract reference for a zonal trip, so a blank one cannot be reconciled against a
      vendor invoice. The amount still bills (the engine set it) — this is a reconciliation gate, so WARN. */
-  var _zNo = ((model.zonal && model.zonal.rfqGroups) || []).filter(function (x) { return x.rfq === '(no RFQ id)'; })[0];
-  add('Every zonal trip carries an RFQ ID', !_zNo,
-      _zNo ? (_zNo.trips + ' zonal trip(s) have a blank rfq_id \u2014 \u20b9' + Math.round(_zNo.amt)
+  /* only a zonal REGULAR trip can be "missing" an rfq_id — adhoc bills on its amount and never has one,
+     so it is excluded here or this gate would WARN forever on perfectly correct data */
+  var _zNo = ((model.zonal && model.zonal.rfqGroups) || []).filter(function (x) {
+    return !x.isAdhoc && x.rfq === '(no RFQ id)';
+  })[0];
+  add('Every zonal REGULAR trip carries an RFQ ID', !_zNo,
+      _zNo ? (_zNo.trips + ' zonal Regular trip(s) have a blank rfq_id \u2014 \u20b9' + Math.round(_zNo.amt)
         + ' still bills but cannot be tied to an RFQ line on the invoice. Fix in the data engine.') : '', 'WARN');
 
   var oop = 0;

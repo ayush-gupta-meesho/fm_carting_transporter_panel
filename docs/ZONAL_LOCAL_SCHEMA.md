@@ -4,8 +4,10 @@
 amendment in §0 (a zonal trip has no `contract_id`). This document is the contract between the data
 engine, the Apps Script backend, the Vercel panel and the Billing MIS.
 
-Verified by `testkit/_uitest.js` (153 assertions, real browser) and `testkit/_billtest.js`
-(22 assertions, real Billing.gs vs an independent sum). Run both before any push.
+Verified by four harnesses in `testkit/` — `_apitest.js` (22, the dispute-claim contract across all three
+hops), `_uitest.js` (225, real browser), `_billtest.js` (30, real Billing.gs vs an independent sum) and
+`_resolvetest.js` (15, does an upheld resolution actually change what the trip pays). Run all four before
+any push.
 
 Route scope is a **second axis alongside Regular/Adhoc**, not a third billing type. Every trip has
 both a `route_scope` and a `billing_type`.
@@ -28,15 +30,39 @@ on that:
 | MIS Summary | one line per contract | **one line per `rfq_id` + a Zonal subtotal** |
 | Log tabs (`contract_id` column) | `contract_id` | `rfq_id` — written by `_billRef()`, with `route_scope` alongside |
 
+### Zonal ADHOC has no RFQ id — and that is not a missing value
+
+A zonal **Regular** trip bills at its RFQ rate, so `rfq_id` is its billing reference. A zonal **Adhoc**
+trip bills on `adhoc_amount`; **no RFQ rate applies, so the engine leaves `rfq_id` blank by design.**
+The two must never be treated the same way:
+
+| | Zonal Regular | Zonal Adhoc |
+|---|---|---|
+| `rfq_id` | required — it is the billing reference | **blank, correctly** |
+| Blank `rfq_id` means | a data problem → **WARN gate** | nothing; it is the normal state |
+| Panel card | its own card per `rfq_id` | the vendor-level `<oracle>_Zonal_Adhoc_Trips` bucket |
+| Contract / RFQ ID column | the RFQ id | **`Zonal adhoc`** — never `(no RFQ id)` |
+| MIS Summary | one line per `rfq_id` | **one `Zonal adhoc trips` line**, never a phantom `(no RFQ id)` RFQ line |
+| MIS Zonal tab | banded per RFQ | one trailing `Zonal adhoc — billed on amount, no RFQ rate` band |
+| Dispute categories | billing type · amount · **RFQ id** | billing type · amount only — **no RFQ category**, there is no RFQ to dispute |
+
+The gate is therefore **"Every zonal REGULAR trip carries an RFQ ID"**. Scoping it to Regular is not a
+softening: without it the gate would WARN forever on correct data, and a warning that is always on is a
+warning nobody reads.
+
+If the engine *does* stamp an `rfq_id` on a zonal adhoc trip, it is kept and displayed — the RFQ column
+and the dispute category come back. The rules above key off "is the rfq_id actually there", not off a
+hard-coded assumption.
+
 Two consequences worth stating plainly:
 
 1. **There is no RFQ master tab.** Cluster, vehicle size, period and last-trip date are the mode / min /
    max of the card's own trips, and the amount is whatever `zonal_rfq_amount` says. Nothing validates a
    trip's amount against a contracted RFQ rate — that is a conscious trade for zero ops overhead, and the
    place to revisit if amounts start drifting.
-2. **A blank `rfq_id` on a zonal trip is now a data problem, not a cosmetic one** — it is the contract
-   reference. Such trips still bill (the engine set the amount) but group under `(no RFQ id)` and raise a
-   `WARN` gate in the MIS. They are never dropped.
+2. **A blank `rfq_id` on a zonal REGULAR trip is a data problem** — it is the contract reference. Such
+   trips still bill (the engine set the amount) but group under `(no RFQ id)` and raise a `WARN` gate.
+   They are never dropped. On a zonal **Adhoc** trip a blank `rfq_id` is normal — see the table above.
 
 If the engine *does* stamp a `contract_id` on a zonal row, it is ignored for grouping and billing. The
 `route_scope != Zonal` filter in `_misBuildContracts` is belt-and-braces so such a row still cannot reach
@@ -50,7 +76,7 @@ Column **position is irrelevant to the code**: `_readTab()` finds columns by hea
 `Actions.gs` writes via a header lookup (`_setCell`). So the order below is Ayush's chosen order,
 placed for readability, and nothing breaks by inserting mid-table.
 
-### `Trip_Level` — 4 new columns (39 total)
+### `Trip_Level` — 5 new columns (40 total)
 
 | Position | Column | Type | Written by | Values / notes |
 |---|---|---|---|---|
@@ -58,6 +84,7 @@ placed for readability, and nothing breaks by inserting mid-table.
 | 10 | `rfq_id` | varchar | **engine (system)** | the zonal RFQ this trip billed against. Blank for Local. **On a zonal trip this is the contract reference — see §0.** |
 | 25 (after `replaced_default_vehicle_system`) | `zonal_rfq_amount` | decimal | **engine (system)** | fixed payable for a Zonal + Regular trip. Blank/0 for Local. |
 | 31 (after `challan_type_final`) | `zonal_rfq_amount_final` | decimal | **dispute resolution only** | written by the resolution appliers when an amount dispute is upheld. Ground can never type here. |
+| 32 (new, 2026-08-07) | `billing_type_resolved` | varchar | **dispute resolution only** | where an upheld billing-type resolution lands, on **both** scopes. Highest authority. Ground can never type here — a value on an untransferred row is cleared and flagged. See §4c. |
 
 **No `route_scope_final`** — scope is system-defined (rule i). The ground-editable set stays at four:
 `ground_confirmed`, `billing_type_final`, `replaced_default_vehicle_final`, `challan_type_final`.
@@ -68,7 +95,7 @@ what bills, so `zonal_rfq_amount_final` is sufficient on the trip row.
 Zonal adhoc cost uses the existing **`adhoc_amount`** (rule ii). The live column is `adhoc_amount`,
 not `adhoc_cost`.
 
-### `Disputes_Log` — 7 new columns
+### `Disputes_Log` — 10 new columns
 
 Vendors can dispute billing type, amount and RFQ (decision 5), and the panel must be able to render
 "was X, you claim Y" — which needs the original snapshotted, exactly as `orig_total_km` and
@@ -83,6 +110,9 @@ Vendors can dispute billing type, amount and RFQ (decision 5), and the panel mus
 | `orig_zonal_rfq_amount` | decimal | snapshot — without this the dispute card cannot show the before-value |
 | `resolved_zonal_amount` | decimal | ground's answer → applied to `Trip_Level.zonal_rfq_amount_final` |
 | `resolved_rfq_id` | varchar | ground's answer → applied to `Trip_Level.rfq_id` on a zonal row (it is the billing reference; see §0) |
+| `claim_challan_type` | varchar | posted automatically when a vendor claims a KM or amount on an **RTO** trip — see §4d |
+| `orig_challan_type` | varchar | snapshot of `challan_type_final \|\| challan_type` |
+| `resolved_challan_type` | varchar | ground's answer → applied to `Trip_Level.challan_type_final` on **both** scopes. This is what lifts an RTO. |
 
 New `categories` values (no schema change): **`Wrong zonal amount`**, **`Wrong RFQ`**.
 
@@ -98,7 +128,73 @@ New `categories` values (no schema change): **`Wrong zonal amount`**, **`Wrong R
 |---|---|---|
 | `route_scope` | varchar | lets acceptance % be reported local vs zonal without joining back to `Trip_Level`. |
 
-**Total: 13 new columns across 4 tabs.** Add them in one pass.
+**Total: 17 new columns across 4 tabs** (13 original + `Trip_Level.billing_type_resolved` and three
+`Disputes_Log` challan columns added 2026-08-07). Add them in one pass.
+
+## 4c. An upheld dispute CAN flip a zonal trip's billing type — through its own column
+
+Rule (iii) says ground can never revert a zonal classification. It says nothing about a dispute that ops
+has examined and upheld, and a vendor who is billed Regular on a trip that was genuinely Adhoc needs a
+route. **A resolution may now flip it — by writing `billing_type_resolved`, a column only the two
+resolution appliers ever touch.**
+
+**One precedence, both scopes — `resolution > ground > system`:**
+
+```
+billing = billing_type_resolved                       // resolution appliers only, BOTH scopes
+       || (zonal ? '' : billing_type_final)           // ground — LOCAL only (rule iii on zonal)
+       || billing_type_system                         // the engine
+```
+
+So `resolved_billing_type` always lands in **one** column whatever the scope, and `Trip_Level` can be read
+without first checking whether a trip is local or zonal. The only scope-dependent term is ground's
+`billing_type_final`, which is skipped on zonal — that is rule (iii), now visible in a single expression
+instead of two divergent ones.
+
+Ground keeps its column and still reclassifies **local** trips exactly as before; a resolution simply
+outranks it. On zonal, ground never counted and still does not.
+
+Sharing `billing_type_final` was tried and rejected: it is a *ground* column, so any stray ground edit on a
+row the `ZONAL_NOT_EDITABLE` guard never saw would silently re-price the trip. The `TR-ZT-0006` demo row is
+exactly that case and moved ₹4,800 the moment the columns were shared — which is what caught it.
+
+**And a resolution cannot predate a dispute.** `transferReadyTrips()` clears any `billing_type_resolved`
+found on a row that has never been sent to a vendor — on both scopes — and flags it in
+`Ground_Confirmation_Log.data_sent`. A hand-typed cell must never outrank the engine.
+
+**Guard: a flip that would zero the trip is refused.** A zonal Adhoc trip bills `adhoc_amount`. The engine
+populates `adhoc_amount` on every trip, so in practice the flip has a value to land on and this guard never
+fires — it costs nothing when the data is right. But if `resolved_billing_type = Adhoc` and *both*
+`resolved_amount` and the existing `adhoc_amount` are empty, the applier **refuses the flip** and logs
+`REFUSED flip to Adhoc — the trip would pay 0. Fill resolved_amount and re-run.` A ₹5,300 trip must never
+silently become a ₹0 trip because one field was empty.
+
+(The zonal Regular rows in `testkit/demo-data` have a blank `adhoc_amount` — that is a gap in the demo
+fixture, not a description of production. It is what the guard is tested against.)
+
+## 4d. Disputing an RTO trip — the vendor just claims the KM or amount
+
+An RTO trip pays nothing whatever its scope (the ONE RTO RULE), and the classifier applies that *before*
+any amount: `payable = rto ? 0 : …`, `km = rto ? 0 : km`. So an upheld amount or KM dispute on an RTO trip
+used to be a **proven no-op** — the resolution wrote a value the classifier then discarded.
+
+`challan_type_final` is an **override** column: blank is its correct resting state, and it stays blank
+whenever ground has nothing to change — exactly like the other three `_final` columns. The problem was
+never that it was empty; it was that **nothing in the panel, the API or the appliers could ever write it**,
+so the one lever that clears RTO had no handle. Now:
+
+- The vendor sees no new category. On an RTO trip the ordinary **Wrong KM / Amount** panel explains that
+  entering a value is *also* a claim that this was not an RTO trip, and the panel posts
+  `claim_challan_type = 'Forward Only'` alongside the value. The vendor is never asked to name a challan
+  type from a list they do not use.
+- Ops answers with `resolved_challan_type`, which writes `Trip_Level.challan_type_final` on **both** scopes
+  — a challan is a fact about the trip, not a routing classification the engine owns.
+- Everything else follows automatically through the shared classifier: the trip stops being RTO, and its
+  KM re-enters the slab or its amount becomes payable.
+
+Verified by `testkit/_resolvetest.js`: a zonal RTO goes ₹0 → ₹5,300, a local RTO's 180 km enters the slab,
+and a local Adhoc RTO recovers ₹4,944 — while writing `zonal_rfq_amount_final` or `total_trip_km` alone
+still changes nothing, which is what made the old path dead.
 
 ## 2. The amount matrix — scope × billing × RTO
 

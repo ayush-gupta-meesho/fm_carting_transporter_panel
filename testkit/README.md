@@ -11,6 +11,8 @@ cd testkit
 npm i playwright && npx playwright install chromium   # first time only
 node _mkpayload.js      # runs Code.gs over demo-data/*.csv -> payload.json
 node _apitest.js        # API: the dispute-claim contract across all three hops
+node _resolvetest.js    # does an upheld resolution actually change what the trip pays?
+node _flowtest.js       # does anyone have to type into Trip_Level to resolve a dispute?
 node _uitest.js         # panel: drives a real browser
 node _billtest.js       # MIS: runs Billing.gs vs an independent sum
 ```
@@ -25,10 +27,11 @@ node _mkpayload.js
 node _apitest.js
 node _uitest.js
 node _billtest.js
+node _resolvetest.js
+node _flowtest.js
 ```
 
-All three exit non-zero on any failure. Current state: **_apitest 19, _uitest 207, _billtest 22 — all
-passing.**
+All three exit non-zero on any failure. Current state: **_apitest 22, _uitest 216, _billtest 30, _resolvetest 15, _flowtest 10 — all passing.**
 
 ## `_apitest.js` — the hop nothing else covers
 
@@ -87,3 +90,27 @@ stops at the POST body) nor `_billtest` could see it.
 with a blank `rfq_id`, a zonal trip with `km` and `amt` deleted entirely — the exact shape that printed
 `Current KM: null km`). Add new shapes there; `_uitest.js` discovers trip kinds from the payload, so a
 new kind is picked up automatically.
+
+## `_resolvetest.js` — does an upheld dispute actually change anything?
+
+The subtlest failure in this system is a dispute that is raised, logged, resolved and reported to the
+vendor as **Resolved** — over a trip that did not change. Two of those existed and neither was visible
+from reading the code:
+
+| Loop | The dead end | Now |
+|---|---|---|
+| Zonal Regular → Adhoc | the appliers ignored `resolved_billing_type` on zonal, yet still flipped the vendor to `Reconfirm` | a resolution writes **`billing_type_resolved`** (its own column — ground's `_final` is still ignored) and the trip pays `adhoc_amount` |
+| Amount / KM on an RTO trip | `payable = rto ? 0 : …` is applied *before* any resolved value, so writing `zonal_rfq_amount_final` or `total_trip_km` on an RTO trip was a **no-op** | a value claim on an RTO trip carries `claim_challan_type`; `resolved_challan_type` writes `challan_type_final`, lifts the RTO, and the value comes back |
+
+It runs the real `_classifyTrip` over the sheet state each resolution would produce, and asserts both
+that the loop closes **and** that ground is still locked out — the case that caught sharing
+`billing_type_final` and moving ₹4,800.
+
+## `_flowtest.js` — nobody types into Trip_Level
+
+Runs the real `applyResolutionsFromSheet()` against an in-memory sheet and **records every Trip_Level cell
+it writes**, so "ops only ever edits Disputes_Log" is evidence rather than a claim. Covers a zonal
+Regular→Adhoc flip, an RTO lifted on both scopes, a still-Open dispute that must stay untouched, and a
+second run proving `resolved_at` makes it idempotent.
+
+See `docs/DISPUTE_RESOLUTION_RUNBOOK.md` for the human-facing version of the same flow.

@@ -4,8 +4,11 @@
 sheet as it stands (32 trips, 11 zonal), so you can compare literally. Anything that does not match is a
 real failure, not a rounding difference.
 
-Prerequisite: `Code.gs`, `Actions.gs`, `Billing.gs` pasted into Apps Script and saved, `index.html` pushed
-to Vercel.
+Prerequisite: `Code.gs`, `Actions.gs`, `Billing.gs` pasted into Apps Script and saved; `index.html` **and
+`api/action.js`** deployed to Vercel; and the 4 new columns added — `Trip_Level.billing_type_resolved`,
+`Disputes_Log.claim_challan_type` / `orig_challan_type` / `resolved_challan_type`.
+
+For the dispute-resolution workflow by role, see `docs/DISPUTE_RESOLUTION_RUNBOOK.md`.
 
 ---
 
@@ -18,12 +21,14 @@ cd testkit
 npm i playwright
 npx playwright install chromium
 node _mkpayload.js
-node _apitest.js     # expect: ALL 19 CHECKS PASSED
-node _uitest.js      # expect: ALL 207 CHECKS PASSED
-node _billtest.js    # expect: ALL 22 CHECKS PASSED
+node _apitest.js       # expect: ALL 22 CHECKS PASSED
+node _uitest.js        # expect: ALL 216 CHECKS PASSED
+node _billtest.js      # expect: ALL 30 CHECKS PASSED
+node _resolvetest.js   # expect: ALL 21 CHECKS PASSED
+node _flowtest.js      # expect: ALL 10 CHECKS PASSED
 ```
 
-If either fails, stop — the bug is in the code, not in your sheet, and the failure line names it.
+If any fails, stop — the bug is in the code, not in your sheet, and the failure line names it.
 
 ---
 

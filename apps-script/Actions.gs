@@ -144,7 +144,13 @@ function applyConfirm(a) {
 function _billRef(ctx, ri) {
   var rv = ctx.values[ri];
   var scope = _low(_s(rv[ctx.idx['route_scope']]) || 'Local');
-  if (scope === 'zonal') return _s(rv[ctx.idx['rfq_id']]) || '(no RFQ id)';
+  if (scope === 'zonal') {
+    var rfq = _s(rv[ctx.idx['rfq_id']]);
+    if (rfq) return rfq;
+    // a zonal ADHOC trip bills on its amount and has no RFQ by design — say so, do not flag it
+    var bill = _low(_s(rv[ctx.idx['billing_type_system']]));
+    return (bill === 'adhoc') ? 'Zonal adhoc' : '(no RFQ id)';
+  }
   return _s(rv[ctx.idx['contract_id']]);
 }
 function _isZonalRow(ctx, ri) {
@@ -182,6 +188,10 @@ function applyDispute(a) {
     claim_amount: (a.claim_amount === '' || a.claim_amount == null) ? '' : a.claim_amount,
     claim_zonal_amount: (a.claim_zonal_amount === '' || a.claim_zonal_amount == null) ? '' : a.claim_zonal_amount,
     claim_rfq_id: _s(a.claim_rfq_id),
+    /* An RTO trip pays nothing whatever its scope, so claiming a KM or an amount on one is implicitly a
+       claim that it was NOT an RTO. challan_type_final is the ONLY lever that clears RTO — without this
+       field an upheld amount/KM dispute on an RTO trip is a no-op. */
+    claim_challan_type: _s(a.claim_challan_type),
     claim_contract_id: _s(a.claim_contract_id), vendor_description: _s(a.vendor_description),
     proof_url: _s(a.proof_url), callback_number: _s(a.callback_number),
     // teal (original snapshot from Trip_Level at submit)
@@ -193,6 +203,7 @@ function applyDispute(a) {
     orig_billing_type: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
     orig_replaced_default_vehicle: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
     orig_total_km: g('total_trip_km'), orig_adhoc_amount: g('adhoc_amount'),
+    orig_challan_type: _s(rv[ctx.idx['challan_type_final']]) || g('challan_type'),
     orig_zonal_rfq_amount: _s(rv[ctx.idx['zonal_rfq_amount_final']]) || _s(rv[ctx.idx['zonal_rfq_amount']]),
     // red block left blank; initial open status
     dispute_status: 'Open', reconfirm_status: isRedispute ? 'Re-disputed' : ''
@@ -251,6 +262,7 @@ function transferReadyTrips() {
     if (now < dl) continue;                                          // still inside the ground window
 
     var ts = iso(now);
+    var notes_resolvedStray = false;
     var groundConfirmed = _yes(rv[ctx.idx['ground_confirmed']]);
 
     // GUARD: a Regular classification on a NON-default vehicle needs a valid replaced-default mapping,
@@ -270,6 +282,14 @@ function transferReadyTrips() {
      * exempt from it. Separately, route_scope and billing on zonal are SYSTEM outcomes: any ground
      * edit to billing_type_final or replaced_default_vehicle_final is cleared and flagged, so
      * "zonal adhoc cannot be reverted to Regular" holds in the sheet as well as in the classifier. */
+    /* billing_type_resolved is written ONLY by the resolution appliers, and a resolution cannot exist
+       before a dispute, which cannot exist before the trip is transferred. So a value on a row that has
+       never been sent to a vendor was typed by hand — clear it, on BOTH scopes, rather than let a
+       hand-typed cell outrank the engine. */
+    if (_s(rv[ctx.idx['billing_type_resolved']])) {
+      _setCell(ctx, i, 'billing_type_resolved', '');
+      notes_resolvedStray = true;
+    }
     var _zonalEdit = false;
     if (_isZonal) {
       if (_s(rv[ctx.idx['billing_type_final']])) { _setCell(ctx, i, 'billing_type_final', ''); _zonalEdit = true; }
@@ -306,8 +326,10 @@ function transferReadyTrips() {
       billing_before: _s(rv[ctx.idx['billing_type_system']]), billing_after: _s(rv[ctx.idx['billing_type_final']]) || _s(rv[ctx.idx['billing_type_system']]),
       replaced_vehicle_before: _s(rv[ctx.idx['replaced_default_vehicle_system']]),
       replaced_vehicle_after: _s(rv[ctx.idx['replaced_default_vehicle_final']]) || _s(rv[ctx.idx['replaced_default_vehicle_system']]),
-      data_sent: _dataSent,
-      partial_edit_flag: (_partial || _zonalEdit) ? 'Yes' : 'No'
+      data_sent: _dataSent + (notes_resolvedStray
+        ? ' | CLEARED a hand-typed billing_type_resolved: that column belongs to dispute resolution only.'
+        : ''),
+      partial_edit_flag: (_partial || _zonalEdit || notes_resolvedStray) ? 'Yes' : 'No'
     });
 
     // open the vendor dispute window (if not already set) + default status
@@ -391,13 +413,27 @@ function _applyResolvedRows(rows) {
        * replacement vehicle are system outcomes (no slab, no vehicle mapping), so those three are
        * ignored here however the resolution CSV is filled in. */
       var _rz = _low(_s(tl.values[tr][tl.idx['route_scope']]) || 'Local') === 'zonal';
+      /* The challan applies to BOTH scopes — an RTO marking is a fact about the trip, not a routing
+         classification the engine owns. This is what un-RTOs a trip so its KM or amount comes back. */
+      ow('challan_type_final', get(r, 'resolved_challan_type'));
       if (_rz) {
         ow('zonal_rfq_amount_final', get(r, 'resolved_zonal_amount'));
-        if (get(r, 'resolved_billing_type') || get(r, 'resolved_km') || get(r, 'resolved_aggregate_vehicle')) {
-          notes.push('ZONAL ' + tripId + ': ignored resolved_billing_type / resolved_km / resolved_aggregate_vehicle (system-owned on zonal)');
+        /* An upheld billing-type dispute on zonal DOES flip the trip (decision 2026-08-07). A zonal
+           Adhoc trip bills adhoc_amount, so refuse a flip that would silently zero the trip. */
+        var _nb = _low(get(r, 'resolved_billing_type'));
+        if (_nb === 'adhoc' && !_num(get(r, 'resolved_amount')) && !_num(tl.values[tr][tl.idx['adhoc_amount']])) {
+          notes.push('ZONAL ' + tripId + ': REFUSED flip to Adhoc \u2014 adhoc_amount is blank and no resolved_amount given; the trip would pay 0. Fill resolved_amount and re-run.');
+        } else {
+          // billing_type_RESOLVED, not _final: ground owns _final and must never be able to fake this
+          ow('billing_type_resolved', get(r, 'resolved_billing_type'));
+          ow('adhoc_amount', get(r, 'resolved_amount'));
+        }
+        if (get(r, 'resolved_km') || get(r, 'resolved_aggregate_vehicle')) {
+          notes.push('ZONAL ' + tripId + ': ignored resolved_km / resolved_aggregate_vehicle (no KM slab and no vehicle level on zonal)');
         }
       } else {
-        ow('billing_type_final', get(r, 'resolved_billing_type'));
+        // same column on local as on zonal: resolution > ground > system, one destination
+        ow('billing_type_resolved', get(r, 'resolved_billing_type'));
         ow('total_trip_km', get(r, 'resolved_km'));
         ow('adhoc_amount', get(r, 'resolved_amount'));
         ow('replaced_default_vehicle_final', get(r, 'resolved_aggregate_vehicle'));
@@ -452,13 +488,24 @@ function applyResolutionsFromSheet() {
     var ow = function (tlCol, v) { if (v !== '') _setCell(tl, tr, tlCol, v); };
     // same zonal gate as the CSV importer — see the comment there
     var _rz2 = _low(_s(tl.values[tr][tl.idx['route_scope']]) || 'Local') === 'zonal';
+    // same rules as the CSV importer above — see the comments there
+    ow('challan_type_final', val(i, 'resolved_challan_type'));
     if (_rz2) {
       ow('zonal_rfq_amount_final', val(i, 'resolved_zonal_amount'));
-      if (val(i, 'resolved_billing_type') || val(i, 'resolved_km') || val(i, 'resolved_aggregate_vehicle')) {
-        notes.push('ZONAL ' + tripId + ': ignored resolved_billing_type / resolved_km / resolved_aggregate_vehicle (system-owned on zonal)');
+      var _nb2 = _low(val(i, 'resolved_billing_type'));
+      if (_nb2 === 'adhoc' && !_num(val(i, 'resolved_amount')) && !_num(tl.values[tr][tl.idx['adhoc_amount']])) {
+        notes.push('ZONAL ' + tripId + ': REFUSED flip to Adhoc \u2014 adhoc_amount is blank and no resolved_amount given; the trip would pay 0. Fill resolved_amount and re-run.');
+      } else {
+        // billing_type_RESOLVED, not _final — see the CSV importer
+        ow('billing_type_resolved', val(i, 'resolved_billing_type'));
+        ow('adhoc_amount', val(i, 'resolved_amount'));
+      }
+      if (val(i, 'resolved_km') || val(i, 'resolved_aggregate_vehicle')) {
+        notes.push('ZONAL ' + tripId + ': ignored resolved_km / resolved_aggregate_vehicle (no KM slab and no vehicle level on zonal)');
       }
     } else {
-      ow('billing_type_final', val(i, 'resolved_billing_type'));
+      // same column on local as on zonal — see the CSV importer
+      ow('billing_type_resolved', val(i, 'resolved_billing_type'));
       ow('total_trip_km', val(i, 'resolved_km'));
       ow('adhoc_amount', val(i, 'resolved_amount'));
       ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));

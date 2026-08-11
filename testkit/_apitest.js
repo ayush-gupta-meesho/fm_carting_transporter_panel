@@ -51,13 +51,15 @@ ck(orphanInApi.length===0,'api/action.js copies nothing the panel cannot send'
    +(orphanInApi.length?(' — orphans: '+orphanInApi.join(', ')):''));
 ck(fromApi.includes('claim_zonal_amount'),'claim_zonal_amount is in the API whitelist (the field that went missing)');
 ck(fromApi.includes('claim_rfq_id'),'claim_rfq_id is in the API whitelist');
+ck(fromApi.includes('claim_challan_type'),'claim_challan_type is in the API whitelist (the RTO lever)');
 
 /* ── B. live: actually run api/action.js ──────────────────────────────────── */
 const queued=[];
 const stubCore={
   rget: async ()=>JSON.stringify({trips:{
     'ZONAL::FM-Zonal-REB-RFQ-0005':[{id:'TR-ZT-0001',status:'pending',scope:'Zonal',billing:'Regular',zamt:5300,rfq:'FM-Zonal-REB-RFQ-0005'}],
-    'RJK7-X':[{id:'TR-L-1',status:'pending',scope:'Local',billing:'Regular',km:120}]
+    'RJK7-X':[{id:'TR-L-1',status:'pending',scope:'Local',billing:'Regular',km:120}],
+    'RTO':[{id:'TR-RTO-1',status:'pending',scope:'Local',billing:'Regular',km:0,rto:true,challan:'RTO only'}]
   }}),
   rpush: async (k,v)=>{ queued.push(JSON.parse(v)); },
   sessionFromReq: ()=>({oracle:'ORC-4521',email:'v@x',name:'Rajkot Movers Pvt Ltd'}),
@@ -112,6 +114,17 @@ console.log('  local Regular  -> queued: '+JSON.stringify(Object.fromEntries(
 ck(ql.claim_km==='145','a local KM claim still reaches the queue');
 ck(ql.claim_contract_id==='CID-9','a local contract-id claim still reaches the queue');
 ck(!ql.claim_zonal_amount,'a local claim never carries a zonal amount');
+
+// an RTO trip: claiming a value must also carry the challan correction
+queued.length=0;
+await post({type:'dispute',trip_id:'TR-RTO-1',categories:['value'],
+  claim_km:'180', claim_challan_type:'Forward Only',
+  callback_number:'+91 9812345678', proof_url:'https://x/p.png'});
+const qr=queued[0]||{};
+console.log('  local RTO      -> queued: '+JSON.stringify(Object.fromEntries(
+  Object.entries(qr).filter(([k])=>k.startsWith('claim_')))));
+ck(qr.claim_km==='180','an RTO trip can claim its KM');
+ck(qr.claim_challan_type==='Forward Only','and the challan correction rides along — without it the resolution is a no-op');
 
 // the gates still bite
 ck((await post({type:'dispute',trip_id:'TR-ZT-0001',categories:[],proof_url:'x'})).ok===false,'a dispute with no category is rejected');

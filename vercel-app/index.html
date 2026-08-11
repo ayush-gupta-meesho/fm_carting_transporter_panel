@@ -825,7 +825,12 @@ function showL2(id){
   } else if(c.isAdhocBucket){
     document.getElementById('csumTitle').textContent=c.vendor+' × '+(c.isZonalAdhocBucket?'Zonal Adhoc Trips':'Other Adhoc Trips');
     document.getElementById('csumId').innerHTML=(c.isZonalAdhocBucket?'Zonal trips billed on amount':'Unattributed adhoc trips');
-    if(c.isZonalAdhocBucket) _csumNote('These zonal trips are billed on their <b>amount</b>, not on an RFQ rate, so they sit outside the per-RFQ cards. Each row names the RFQ it ran against.');
+    if(c.isZonalAdhocBucket){
+      var _anyRfq=(TRIPS[c.id]||[]).some(function(t){return !!t.rfq;});
+      _csumNote('These zonal trips are billed on their <b>amount</b>, not on an RFQ rate, so they sit outside the per-RFQ cards'
+        +(_anyRfq ? '. Each row names the RFQ it ran against.'
+                  : ' and carry no RFQ ID \u2014 there is no RFQ rate to reference.'));
+    }
     else _csumNote('These trips are not attributed to any of your contracts, so they are billed standalone. Each row shows the contract ID recorded against it — flag any that look wrong.');
     var _bkN=(TRIPS[c.id]||[]).length;   // NB: _bn is the breakupNote element in this scope
     _csumMetric('csmVeh',(c.isZonalAdhocBucket?'Zonal Adhoc Trip':'Adhoc Trip')+(_bkN===1?'':'s'),_bkN);
@@ -1120,7 +1125,14 @@ var DISPUTE_CATS=[
   {key:'rfq',    label:'Contract / RFQ ID mismatch or missing',      zlabel:'Wrong RFQ ID',        log:'rfq',     zlog:'Wrong RFQ'}
 ];
 function _isZonal(t){ return !!t && String(t.scope||'Local').toLowerCase()==='zonal'; }
-function _catsFor(t){ var z=_isZonal(t); return DISPUTE_CATS.map(function(c){ return {key:c.key,label:z?c.zlabel:c.label,log:z?c.zlog:c.log}; }); }
+function _catsFor(t){
+  var z=_isZonal(t);
+  var out=DISPUTE_CATS.map(function(c){ return {key:c.key,label:z?c.zlabel:c.label,log:z?c.zlog:c.log}; });
+  /* A zonal ADHOC trip bills on its amount, not on an RFQ rate — it has no rfq_id by design, so there is
+     no RFQ for the vendor to dispute. Offering the category would be offering a field with nothing in it. */
+  if(z && t.billing==='Adhoc' && !t.rfq) out=out.filter(function(c){ return c.key!=='rfq'; });
+  return out;
+}
 /* Zonal card ids are internal: "ZONAL::<rfq_id>" (current) or "<contract>::ZONAL" (pre-2026-08-07).
    A vendor only ever sees the RFQ id, which for a zonal trip IS the contract reference. */
 function _cidLabel(cid){ return String(cid||'').replace(/^ZONAL::/,'').replace(/::ZONAL$/,''); }
@@ -1302,11 +1314,14 @@ function catPanelHtml(key,trip,cid){
       return '<div class="dp-title">Wrong amount</div>'
         +'<div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+_cur+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>'
         +_dpNote(trip.rto
-            ? 'This trip is marked RTO, so it pays nothing. If the RTO marking itself is wrong, tick it here and say so in the Description — the amount follows the challan.'
-            : 'Zonal trips are paid a fixed amount per trip from the RFQ'+(trip.rfq?(' ('+trip.rfq+')'):'')+'. There is no KM slab, so KM is not disputed here.');
+            ? 'This trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), so it currently pays nothing. Entering the amount you expected here is also a claim that <b>this was not an RTO trip</b> — if it is upheld, the RTO marking is lifted and the trip becomes payable.'
+            : (trip.billing==='Adhoc'
+                ? 'This zonal trip is billed on its <b>amount</b>, not on an RFQ rate, so it carries no RFQ ID. There is no KM slab either — the amount is the whole of it.'
+                : 'Zonal trips are paid a fixed amount per trip from the RFQ'+(trip.rfq?(' ('+trip.rfq+')'):'')+'. There is no KM slab, so KM is not disputed here.'));
     }
-    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong Amount</div><div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+(trip.rto?'₹0 — RTO, not payable':money(trip.amt||0))+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>';
-    return '<div class="dp-title">Wrong KM</div><div class="dp-row"><div class="dp-field"><label>Current KM</label><input readonly value="'+(trip.rto?'0 km (RTO)':((trip.km==null?'—':trip.km)+' km'))+'"/></div><div class="dp-field"><label>Correct KM</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct KM"/></div></div>';
+    var _rtoNote = trip.rto ? _dpNote('This trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), so it currently pays nothing and its KM is not added to any slab. Entering the value you expected here is also a claim that <b>this was not an RTO trip</b> — if it is upheld, the RTO marking is lifted and the KM or amount comes back.') : '';
+    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong Amount</div><div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+(trip.rto?'₹0 — RTO, not payable':money(trip.amt||0))+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>'+_rtoNote;
+    return '<div class="dp-title">Wrong KM</div><div class="dp-row"><div class="dp-field"><label>Current KM</label><input readonly value="'+(trip.rto?'0 km (RTO)':((trip.km==null?'—':trip.km)+' km'))+'"/></div><div class="dp-field"><label>Correct KM</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct KM"/></div></div>'+_rtoNote;
   }
 
   if(key==='rfq'){
@@ -1381,6 +1396,10 @@ async function submitDispute(){
     if(zonal && disputeTrip.billing!=='Adhoc') claim.claim_zonal_amount=_numv(_vv);   // -> zonal_rfq_amount_final
     else if(zonal || disputeTrip.billing==='Adhoc') claim.claim_amount=_numv(_vv);    // -> adhoc_amount
     else claim.claim_km=_numv(_vv);
+    /* An RTO trip pays nothing whatever its scope, so a value claim on one only means anything if the
+       RTO marking is lifted too. challan_type_final is the only lever that does that, so the claim
+       rides along automatically — the vendor is not asked to name a challan type they do not use. */
+    if(disputeTrip.rto) claim.claim_challan_type='Forward Only';
   }
   if(cats.indexOf('rfq')>-1){
     if(zonal && _rq) claim.claim_rfq_id=String(_rq.value).trim();

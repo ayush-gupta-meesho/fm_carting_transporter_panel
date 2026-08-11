@@ -71,6 +71,7 @@ module.exports = async (req, res) => {
            blank. Any new claim_* field must be added here too. */
         claim_zonal_amount: (body.claim_zonal_amount === undefined || body.claim_zonal_amount === null) ? '' : body.claim_zonal_amount,
         claim_rfq_id: String(body.claim_rfq_id || ''),
+        claim_challan_type: String(body.claim_challan_type || ''),
         claim_contract_id: String(body.claim_contract_id || ''),
         vendor_description: String(body.vendor_description || ''),
         proof_url: String(body.proof_url || ''),

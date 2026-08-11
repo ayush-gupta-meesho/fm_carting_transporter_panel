@@ -111,7 +111,10 @@ function _fmtWin(v) {
  * panel and Billing.gs cannot drift.
  */
 var ZONAL_PREFIX = 'ZONAL::';
-var NO_RFQ_KEY   = '(no RFQ id)';        // zonal Regular with a blank rfq_id: still visible, still gated
+var NO_RFQ_KEY   = '(no RFQ id)';        // zonal REGULAR with a blank rfq_id: a data problem, gated
+/* A zonal ADHOC trip is billed on its amount, not on an RFQ rate, so it legitimately has NO rfq_id.
+   That is not a missing value and must never read as one, or be gated as one. It gets its own label. */
+var ZONAL_ADHOC_REF = 'Zonal adhoc';
 function _zonalCardId(rfq) { return ZONAL_PREFIX + (_s(rfq) || NO_RFQ_KEY); }
 function _zonalRfqOf(cardId) {           // 'ZONAL::FM-Zonal-x' -> 'FM-Zonal-x'; anything else -> ''
   var s = _s(cardId);
@@ -309,7 +312,7 @@ function _buildDisputeMap(oracle) {
  * That is deliberate: it is the only way the MIS and the panel cannot drift apart.
  * Do not inline these rules anywhere else — extend them here.
  *
- *   billing   = billing_type_final || billing_type_system || defaultBilling
+ *   billing   = billing_type_resolved || billing_type_final(local only) || billing_type_system
  *   rto       = (challan_type_final || challan_type) startsWith 'rto',
  *               or the zero-km + km_accumulated_flag='No' fallback on a Regular trip
  *   isDefault = the (contract_id, vehicle_number) pair exists in Contract_Vehicles (exact string)
@@ -323,11 +326,20 @@ function _classifyTrip(t, defSet, defaultBilling) {
   var scope   = _s(t.route_scope) || 'Local';
   var isZonal = _low(scope) === 'zonal';
 
-  // On a zonal trip ground's billing_type_final is ignored outright, so "zonal adhoc cannot be
-  // reverted to Regular" holds by construction, not only by the guard in Actions.gs.
-  var billing = isZonal
-    ? (_s(t.billing_type_system) || (defaultBilling || 'Regular'))
-    : (_s(t.billing_type_final) || _s(t.billing_type_system) || (defaultBilling || 'Regular'));
+  /* ONE precedence, both scopes:   resolution  >  ground  >  system
+   *
+   *   billing_type_resolved  written ONLY by the two dispute-resolution appliers. Highest authority on
+   *                          BOTH scopes, so `resolved_billing_type` always lands in one predictable
+   *                          column and Trip_Level can be read without knowing the trip's scope.
+   *   billing_type_final     ground's column. Counts on LOCAL only — on zonal it stays ignored outright,
+   *                          which is rule (iii) holding by construction, not just by the guard.
+   *   billing_type_system    the engine.
+   *
+   * The two must never share a column: a stray ground edit on a row the transfer guard never saw would
+   * otherwise silently re-price the trip. The TR-ZT-0006 test row is exactly that case. (2026-08-07) */
+  var billing = _s(t.billing_type_resolved)
+    || (isZonal ? '' : _s(t.billing_type_final))
+    || _s(t.billing_type_system) || (defaultBilling || 'Regular');
   var isAdhoc = _low(billing) === 'adhoc';
 
   var km      = _num(t.total_trip_km);
@@ -358,7 +370,8 @@ function _classifyTrip(t, defSet, defaultBilling) {
     /* ref = the trip's OWN billing reference: contract_id on local, rfq_id on zonal. Same rule as
        _billRef() in Actions.gs, so a panel row, a log row and an MIS line all name a trip identically.
        Needed because a bucket card holds trips from several different references. */
-    ref:       isZonal ? (_s(t.rfq_id) || NO_RFQ_KEY) : _s(t.contract_id),
+    ref:       isZonal ? (_s(t.rfq_id) || (isAdhoc ? ZONAL_ADHOC_REF : NO_RFQ_KEY))
+                       : _s(t.contract_id),
     billing:   isAdhoc ? 'Adhoc' : 'Regular',
     isAdhoc:   isAdhoc,
     km:        km,
@@ -504,6 +517,7 @@ function _buildVendorPayload(oracle, opts) {
         km:        isAdhoc ? null : (rto ? 0 : km),
         amt:       isAdhoc ? _x.payable : null,          // RTO adhoc pays 0 — screen must match the bill
         rto:       rto ? true : undefined,
+        challan:   _s(t.challan_type_final) || _s(t.challan_type),   // shown when disputing an RTO trip
         status:    _x.statusUi,
         win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         winTs:     _s(t.dispute_window_end),   // raw + comparable; blank = no window recorded = open
@@ -581,6 +595,7 @@ function _buildVendorPayload(oracle, opts) {
       completed: _fmtShort(t.trip_end_time),
       km: null, amt: null, zamt: zx.payable,
       rto: zx.rto ? true : undefined,
+      challan: _s(t.challan_type_final) || _s(t.challan_type),
       status: zx.statusUi,
       win: zx.settled ? null : _fmtWin(t.dispute_window_end),
       winTs: _s(t.dispute_window_end),
@@ -657,6 +672,7 @@ function _buildVendorPayload(oracle, opts) {
         replTag: 'default', replFor: undefined,
         completed: _fmtShort(t.trip_end_time), km: isAdhoc ? null : (rto ? 0 : km),
         amt: isAdhoc ? _x.payable : null, rto: rto ? true : undefined,
+        challan: _s(t.challan_type_final) || _s(t.challan_type),
         status: _x.statusUi,
         win: _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         winTs: _s(t.dispute_window_end),
@@ -725,10 +741,10 @@ function _buildRoute(t) {
 var TAB_SCHEMA = {
     'Contract_Info': ['contract_id','vendor_oracle_id','vendor_name','cluster','vehicle_size','hours_slab','no_of_vehicles','total_km_slab','fixed_monthly_value','ex_km_rate','contract_start_date','contract_end_date','contract_status'],
     'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','default_vehicle_id','start_date','end_date'],
-    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
+    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','billing_type_resolved','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
     'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
-    'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_zonal_amount','claim_rfq_id','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_route_scope','orig_rfq_id','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','orig_zonal_rfq_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_zonal_amount','resolved_rfq_id','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
+    'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_zonal_amount','claim_rfq_id','claim_challan_type','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_route_scope','orig_rfq_id','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','orig_challan_type','orig_zonal_rfq_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_zonal_amount','resolved_rfq_id','resolved_challan_type','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
     'Ground_Confirmation_Log': ['log_id','row_id','trip_id','contract_id','transporter_oracle_id','route_scope','trip_end_time','ground_review_deadline','sent_to_vendor_timestamp','ground_action_state','billing_before','billing_after','replaced_vehicle_before','replaced_vehicle_after','data_sent','partial_edit_flag'],
     'Confirmation_Status_View': ['row_id','trip_id','contract_id','transporter_oracle_id','route_scope','sent_to_vendor_timestamp','vendor_status','status_updated_at','dispute_id','dispute_status','reconfirm_status','dispute_window_end','final_state']
 };

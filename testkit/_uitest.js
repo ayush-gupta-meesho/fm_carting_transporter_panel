@@ -114,18 +114,45 @@ async function refCells(cid){
   ck(mism.length===0,'each rendered reference equals the payload\'s t.ref ('+mism.length+' mismatch)');
   const z=r.rows.filter(x=>x.teal);
   console.log('  global: '+r.rows.length+' rows, '+z.length+' tinted as RFQ');
-  ck(z.length>0&&z.every(x=>/^FM-Zonal-|^MIG-|no RFQ id/.test(x.ref)),'zonal rows show an RFQ id, tinted teal');
+  ck(z.length>0&&z.every(x=>/^FM-Zonal-|^MIG-|no RFQ id|^Zonal adhoc$/.test(x.ref)),
+     'zonal rows show an RFQ id (or "Zonal adhoc" where none applies), tinted teal');
   ck(r.rows.filter(x=>!x.teal).every(x=>!/^FM-Zonal-|^MIG-/.test(x.ref)),'local rows show a contract id, not an RFQ');
 }
-/* the zonal-adhoc bucket mixes RFQs, so the column MUST be present there */
+/* A zonal ADHOC trip bills on its amount and carries NO rfq_id by design. It must never read as a
+   missing value — not "(no RFQ id)", not the bucket's own name. */
 {
   const zb=await page.evaluate(()=>(CONTRACTS.find(c=>c.isZonalAdhocBucket)||{}).id);
   const r=await refCells(zb);
   const refs=r.rows.map(x=>x.ref);
   console.log('  zonal-adhoc bucket refs: '+refs.join(' | '));
-  ck(r.hasCol,'the Zonal Adhoc bucket shows the reference column (its trips span several RFQs)');
-  ck(refs.every(Boolean)&&new Set(refs).size>1,'and each of its trips names its own RFQ id');
-  ck(r.rows.every(x=>x.teal),'every row in the zonal-adhoc bucket is tinted as an RFQ');
+  ck(r.hasCol,'the Zonal Adhoc bucket shows the reference column');
+  ck(refs.every(Boolean),'every zonal adhoc row names a reference');
+  ck(r.rows.every(x=>x.teal),'every row in the zonal-adhoc bucket is tinted as zonal');
+  ck(!refs.some(x=>/no RFQ id/i.test(x)),'a zonal adhoc trip never reads "(no RFQ id)" — it has none by design');
+  ck(!refs.some(x=>/Zonal_Adhoc_Trips|^ADHOC-/.test(x)),'and never borrows the bucket card name');
+  const noRfq=await page.evaluate(z=>(TRIPS[z]||[]).filter(t=>!t.rfq).length,zb);
+  if(noRfq) ck(refs.filter(x=>x==='Zonal adhoc').length===noRfq,
+    'a zonal adhoc trip with no rfq_id reads "Zonal adhoc" ('+noRfq+' row(s))');
+}
+/* and the dispute modal must not offer an RFQ category on a trip that has no RFQ */
+{
+  const hit=await page.evaluate(()=>{
+    for(const cid of Object.keys(TRIPS)) for(const t of TRIPS[cid])
+      if(t.scope==='Zonal'&&t.billing==='Adhoc'&&!t.rfq&&(t.status==='pending'||t.status==='reconfirm'))
+        return {cid,id:t.id};
+    return null;});
+  if(hit){
+    await page.evaluate(x=>openDispute(x.cid,x.id),hit);
+    await page.waitForSelector('#disputeModal.open');
+    const labels=await page.$$eval('#dispCats .disp-check',e=>e.map(x=>x.textContent.trim()));
+    console.log('  zonal adhoc, no RFQ → categories: '+labels.join(' / '));
+    ck(!labels.some(l=>/RFQ/.test(l)),'a zonal ADHOC trip with no rfq_id is not offered "Wrong RFQ ID"');
+    ck(labels.some(l=>/Wrong amount/.test(l)),'it is still offered "Wrong amount"');
+    await page.click('#chk-value input'); await page.waitForTimeout(40);
+    const note=await page.$eval('#panel-value',e=>e.innerText);
+    ck(/billed on its amount/i.test(note),'and the panel explains why there is no RFQ');
+    await page.evaluate(()=>closeDispute());
+  } else { ck(false,'expected a zonal adhoc trip with no rfq_id in the payload'); }
 }
 /* the other-adhoc bucket mixes contract ids the same way */
 {
@@ -196,14 +223,22 @@ for(const s of specimens){
   const curVals=await page.$$eval('#dispDetails input[readonly]',els=>els.map(e=>e.value));
   console.log('  '+s.k.padEnd(26)+' cats: '+labels.join(' / '));
   console.log('    '.padEnd(28)+' current: '+curVals.join(' | '));
+  if(/RTO/.test(s.k)){
+    const vp=await page.$eval('#panel-value',e=>e.innerText).catch(()=>'');
+    ck(/not an RTO trip/i.test(vp),'an RTO trip explains that claiming a value also claims it was not an RTO — '+s.k);
+  }
   ck(!/ZONAL::|::ZONAL/.test(title),'modal title clean for '+s.k);
   ck(curVals.every(v=>!/null|undefined|NaN/.test(v)),'no null in readonly fields for '+s.k);
 
   const zonal=/^Zonal/.test(s.k);
+  /* a zonal ADHOC trip with no rfq_id has no RFQ to dispute — the category is correctly withheld */
+  const wantsRfqCat = zonal && !(/Adhoc/.test(s.k) && /noRFQ/.test(s.k));
   if(zonal){
     ck(labels.some(l=>/Wrong amount/.test(l)),'zonal shows "Wrong amount" not "Wrong KM" — '+s.k);
-    ck(labels.some(l=>/Wrong RFQ ID/.test(l)),'zonal shows "Wrong RFQ ID" — '+s.k);
-    ck(await page.$('#dsp_rfq')!==null,'zonal has an RFQ id input — '+s.k);
+    ck(labels.some(l=>/Wrong RFQ ID/.test(l))===wantsRfqCat,
+       (wantsRfqCat?'zonal shows "Wrong RFQ ID" — ':'zonal adhoc with no RFQ withholds "Wrong RFQ ID" — ')+s.k);
+    ck((await page.$('#dsp_rfq')!==null)===wantsRfqCat,
+       (wantsRfqCat?'zonal has an RFQ id input — ':'zonal adhoc with no RFQ has no RFQ input — ')+s.k);
     ck(await page.$('#dsp_contract')===null,'zonal has NO separate contract-id field: the RFQ id IS the contract ref — '+s.k);
     ck(await page.$('#dsp_aggveh')===null,'zonal has NO aggregate-vehicle dropdown — '+s.k);
     ck(curVals.every(v=>!/ km$/.test(v)),'zonal shows no KM field — '+s.k);
@@ -232,10 +267,16 @@ for(const s of specimens){
   console.log('    → posted: '+JSON.stringify(b.categories)+' '+JSON.stringify(
     Object.keys(b).filter(k=>k.indexOf('claim_')===0).reduce((o,k)=>(o[k]=b[k],o),{})));
   ck(b.type==='dispute'&&b.trip_id===s.id,'posts the right trip for '+s.k);
+  /* An RTO trip pays nothing in either scope, so a value claim on one is only meaningful if the RTO
+     marking is lifted too — claim_challan_type is what does that. Without it the resolution is a no-op. */
+  if(/RTO/.test(s.k)) ck(b.claim_challan_type==='Forward Only',
+    'an RTO trip carries claim_challan_type so an upheld claim is not a no-op — '+s.k);
+  else ck(!b.claim_challan_type,'a non-RTO trip sends no challan claim — '+s.k);
   if(zonal){
     if(/Adhoc/.test(s.k)) ck(b.claim_amount==='9999','zonal adhoc claims claim_amount — '+s.k);
     else ck(b.claim_zonal_amount==='9999','zonal regular claims claim_zonal_amount — '+s.k);
-    ck(b.claim_rfq_id==='FM-Zonal-TEST-9','zonal posts claim_rfq_id — '+s.k);
+    ck((b.claim_rfq_id==='FM-Zonal-TEST-9')===wantsRfqCat,
+       (wantsRfqCat?'zonal posts claim_rfq_id — ':'zonal adhoc with no RFQ posts no claim_rfq_id — ')+s.k);
     ck(!b.claim_km,'zonal never posts claim_km — '+s.k);
     ck(!b.claim_aggregate_vehicle,'zonal never posts claim_aggregate_vehicle — '+s.k);
     ck((b.categories||[]).some(c=>/Wrong zonal amount|Wrong RFQ/.test(c)),'zonal log categories are scope-aware — '+s.k);

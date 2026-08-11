@@ -90,9 +90,27 @@ ck(R(gSum)===R(m.totals.zonal),'the per-RFQ lines sum exactly to the zonal subto
 ck(R(m.totals.zonal)===R(indep.zonal),'Billing.gs zonal total matches the independent CSV sum ('+R(m.totals.zonal)+' vs '+R(indep.zonal)+')');
 ck(m.totals.zonalTrips===indep.zTrips,'zonal trip count matches ('+m.totals.zonalTrips+' vs '+indep.zTrips+')');
 g.forEach(x=>{
-  ck(R(x.amt)===R(indep.byRfq[x.rfq]||0),'RFQ '+x.rfq+' matches the independent sum (₹'+R(x.amt)+')');
+  // adhoc has no rfq_id, so it is compared against the independent '(no RFQ id)' bucket
+  const want = x.isAdhoc ? (indep.byRfq['(no RFQ id)']||0) : (indep.byRfq[x.rfq]||0);
+  ck(R(x.amt)===R(want),(x.isAdhoc?'Zonal adhoc group':'RFQ '+x.rfq)
+     +' matches the independent sum (₹'+R(x.amt)+' vs ₹'+R(want)+')');
 });
-ck(Object.keys(indep.byRfq).length===g.length,'every RFQ in the data has a line ('+g.length+' of '+Object.keys(indep.byRfq).length+')');
+/* ZONAL ADHOC HAS NO RFQ BY DESIGN — it bills on its amount, so it must never become an RFQ line and
+   must never be gated as a missing value. */
+const adG=g.filter(x=>x.isAdhoc), rfqG=g.filter(x=>!x.isAdhoc);
+const adhocRows=tl.filter(t=>String(t.route_scope||'').trim().toLowerCase()==='zonal'
+                        && String(t.billing_type_system||'').trim().toLowerCase()==='adhoc');
+const adhocBlank=adhocRows.filter(t=>!String(t.rfq_id||'').trim()).length;
+console.log('    (zonal adhoc rows: '+adhocRows.length+', of which blank rfq_id: '+adhocBlank+')');
+ck(adhocBlank===adhocRows.length,'the demo data has a blank rfq_id on every zonal ADHOC row, as production will');
+ck(adG.length===1,'zonal adhoc collapses into exactly ONE group, not one per blank rfq');
+ck(adG.length===1&&adG[0].rfq==='Zonal adhoc trips','that group is labelled "Zonal adhoc trips", never "(no RFQ id)"');
+ck(adG.length===1&&adG[0].trips===adhocRows.length,'it holds every zonal adhoc trip ('+(adG[0]||{}).trips+')');
+ck(!rfqG.some(x=>x.rfq==='(no RFQ id)'),'no phantom "(no RFQ id)" RFQ line is created by adhoc');
+ck(rfqG.every(x=>x.adhocN===0),'no RFQ line contains an adhoc trip');
+ck(adG.length===1&&adG[0].regN===0,'the adhoc group contains no Regular trip');
+ck(Object.keys(indep.byRfq).filter(k=>k!=='(no RFQ id)').length===rfqG.length,
+   'every real RFQ in the data has a line ('+rfqG.length+')');
 
 /* payable = fixed + excess + adhoc + zonal, no double count */
 const expect=m.totals.fixed+m.totals.excessAmt+m.totals.adhoc+m.totals.zonal;
@@ -107,12 +125,15 @@ console.log('\n── gates ──');
 gates.forEach(x=>console.log('  ['+(x.level||'')+'] '+(x.verdict==='clear'?'PASS':x.verdict)+'  '+x.name+(x.detail?(' — '+x.detail):'')));
 const zg=gates.filter(x=>/carries an RFQ ID/i.test(x.name));
 ck(zg.length===1,'the "every zonal trip carries an RFQ ID" gate exists');
-ck(zg.length===1&&zg[0].verdict==='clear','that gate passes on clean data (no blank rfq_id here)');
+ck(zg.length===1&&zg[0].verdict==='clear',
+   'the gate is CLEAR even though '+adhocBlank+' zonal adhoc rows have a blank rfq_id — adhoc is not gated');
 
 /* now break one rfq_id and prove the gate bites */
 const d2=JSON.parse(JSON.stringify(d));
 const _k=Object.keys(d2.zonal)[0];
-d2.zonal[_k].rows[0].rfqId='';
+// blank the rfq on a REGULAR row — that IS a data problem and must still be caught
+const _reg=d2.zonal[_k].rows.find(r=>String(r.billing).toLowerCase()!=='adhoc');
+_reg.rfqId='';
 d2.zonal[_k].rfqGroups=_misZonalRfq(d2.zonal[_k]);
 const m2=buildBillingModel(ORC,d2);
 const g2=(runGates(m2,d2)||[]).filter(x=>/carries an RFQ ID/i.test(x.name))[0];
@@ -121,6 +142,7 @@ ck(g2&&g2.verdict!=='clear','the gate FAILS when a zonal trip has a blank rfq_id
 ck(g2&&/blank rfq_id/.test(g2.detail||''),'and the message names the problem');
 ck((m2.zonal.rfqGroups||[]).some(x=>x.rfq==='(no RFQ id)'),'a blank rfq_id still gets its own visible line, not dropped');
 ck(R(m2.totals.zonal)===R(m.totals.zonal),'blanking an rfq_id does not change the money (₹'+R(m2.totals.zonal)+')');
+ck((m2.zonal.rfqGroups||[]).filter(x=>x.isAdhoc).length===1,'the adhoc group survives the broken-data case intact');
 
 console.log('\n── results ──');
 notes.forEach(n=>console.log(n));
