@@ -10,7 +10,7 @@
  * Nothing is written to the Sheet directly — only an action is enqueued.
  */
 'use strict';
-const { rget, rpush, sessionFromReq, readBody } = require('../lib/core');
+const { rget, rpush, sessionFromReq, readBody, pendingVendorActions } = require('../lib/core');
 
 const mkId = () => 'act-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 const ACTIONABLE = { pending: 1, reconfirm: 1 };   // statuses a vendor may act on
@@ -31,12 +31,26 @@ module.exports = async (req, res) => {
       (data.trips[cid] || []).forEach((t) => { index[t.id] = { contract_id: cid, trip: t }; });
     });
 
+    /* Actions already sitting in the queue count as done for gating purposes. Without this the
+       ownership/locking gate reads only the SNAPSHOT, which still says "pending" until the drain runs —
+       so a vendor who confirmed, refreshed, and confirmed again queued the action twice.
+       Guarded on purpose: if lib/core.js has not been updated yet, a vendor must still be able to
+       confirm and dispute. Losing the duplicate check is an annoyance; a 500 on every dispute is not. */
+    const queued = (typeof pendingVendorActions === 'function')
+      ? await pendingVendorActions(s.oracle).catch(() => ({}))
+      : {};
+
     if (type === 'confirm') {
       let ids = Array.isArray(body.trip_ids) && body.trip_ids.length
         ? body.trip_ids.map(String)
         : (body.trip_id ? [String(body.trip_id)] : []);
-      ids = ids.filter((id) => index[id] && ACTIONABLE[index[id].trip.status]);
-      if (!ids.length) return res.json({ ok: false, error: 'No trips are open for confirmation.' });
+      const already = ids.filter((id) => queued[id]);
+      ids = ids.filter((id) => index[id] && ACTIONABLE[index[id].trip.status] && !queued[id]);
+      if (!ids.length) {
+        return res.json({ ok: false, error: already.length
+          ? 'Already submitted — it applies on the next sync.'
+          : 'No trips are open for confirmation.' });
+      }
 
       const action = { action_id: mkId(), type: 'confirm', oracle: s.oracle, email: s.email,
                        vendor_name: s.name, trip_ids: ids, ts: Date.now() };
@@ -49,6 +63,7 @@ module.exports = async (req, res) => {
       const hit = index[tid];
       if (!hit) return res.json({ ok: false, error: 'Trip not found for your account.' });
       if (!ACTIONABLE[hit.trip.status]) return res.json({ ok: false, error: 'This trip is no longer open for dispute.' });
+      if (queued[tid]) return res.json({ ok: false, error: 'An action for this trip is already submitted and applies on the next sync.' });
 
       const cats = Array.isArray(body.categories) ? body.categories.filter(Boolean) : [];
       if (!cats.length) return res.json({ ok: false, error: 'Select at least one dispute reason.' });

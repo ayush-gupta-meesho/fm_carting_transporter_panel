@@ -62,6 +62,8 @@ const stubCore={
     'RTO':[{id:'TR-RTO-1',status:'pending',scope:'Local',billing:'Regular',km:0,rto:true,challan:'RTO only'}]
   }}),
   rpush: async (k,v)=>{ queued.push(JSON.parse(v)); },
+  // mirrors the real lib/core export used by the duplicate-action gate (added 2026-08-18)
+  pendingVendorActions: async ()=>({}),
   sessionFromReq: ()=>({oracle:'ORC-4521',email:'v@x',name:'Rajkot Movers Pvt Ltd'}),
   readBody: async req=>req._body
 };

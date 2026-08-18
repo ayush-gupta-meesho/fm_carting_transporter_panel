@@ -1,20 +1,28 @@
-# Panel test kit — run this before every `vercel-app/index.html` push
+# Panel test kit — run this before every push
 
-Loads the **real** `vercel-app/index.html` in headless Chromium against a payload produced by the
-**real** `apps-script/Code.gs`, and walks the vendor flows end to end. No hand-written fixtures: if
-`Code.gs` and `index.html` drift apart, this catches it.
+Eleven harnesses, **658 assertions**, all driving the **real** `Code.gs` / `Actions.gs` / `Billing.gs` /
+`index.html` / `api/action.js`. No hand-written fixtures anywhere: every number is produced by the real
+code, and every expectation is either an independent re-derivation from `docs/ZONAL_LOCAL_SCHEMA.md` or a
+comparison against the raw CSV. If any two files drift apart, one of these names the drift.
 
 ## Run
 
 ```bash
 cd testkit
 npm i playwright && npx playwright install chromium   # first time only
-node _mkpayload.js      # runs Code.gs over demo-data/*.csv -> payload.json
-node _apitest.js        # API: the dispute-claim contract across all three hops
-node _resolvetest.js    # does an upheld resolution actually change what the trip pays?
-node _flowtest.js       # does anyone have to type into Trip_Level to resolve a dispute?
+node _mkpayload.js      # runs Code.gs over demo-data/*.csv -> payload.json  (do this first)
+
+node _matrixtest.js     # 12,960 classification combinations vs an independent spec oracle
+node _paritytest.js     # the panel and the MIS cannot disagree
+node _billtest.js       # MIS vs an independent CSV sum
+node _guardtest.js      # every refusal path in Actions.gs
+node _importtest.js     # the CSV resolution door, and its equivalence with the in-sheet door
+node _datetest.js       # _toDate / _misInPeriod / _projFields — the quiet failure mode
+node _rtotest.js        # the RTO resolution table
+node _resolvetest.js    # does an upheld resolution change what the trip pays?
+node _flowtest.js       # does anyone have to type into Trip_Level?
+node _apitest.js        # the dispute-claim contract across all three hops
 node _uitest.js         # panel: drives a real browser
-node _billtest.js       # MIS: runs Billing.gs vs an independent sum
 ```
 
 PowerShell has no `&&` — run each line on its own:
@@ -24,14 +32,149 @@ cd testkit
 npm i playwright
 npx playwright install chromium
 node _mkpayload.js
-node _apitest.js
-node _uitest.js
+node _matrixtest.js
+node _paritytest.js
 node _billtest.js
+node _guardtest.js
+node _importtest.js
+node _datetest.js
+node _rtotest.js
 node _resolvetest.js
 node _flowtest.js
+node _apitest.js
+node _uitest.js
 ```
 
-All three exit non-zero on any failure. Current state: **_apitest 22, _uitest 216, _billtest 30, _resolvetest 15, _flowtest 10 — all passing.**
+Every harness exits non-zero on any failure.
+
+| harness | checks | what it is for |
+|---|---:|---|
+| `_uitest.js` | 225 | the panel, in real Chromium |
+| `_guardtest.js` | 81 | every refusal path in `Actions.gs` |
+| `_rtotest.js` | 75 | the RTO resolution table |
+| `_datetest.js` | 69 | dates — the failure mode that never shouts |
+| `_importtest.js` | 60 | the CSV resolution door + door-equivalence |
+| `_billtest.js` | 37 | the MIS vs an independent CSV sum |
+| `_paritytest.js` | 35 | panel ↔ MIS parity |
+| `_matrixtest.js` | 23 | the exhaustive classification matrix |
+| `_apitest.js` | 22 | the `claim_*` contract across three files |
+| `_resolvetest.js` | 21 | does an upheld resolution move money? |
+| `_flowtest.js` | 10 | nobody types into `Trip_Level` |
+| **total** | **658** | |
+
+---
+
+## `_matrixtest.js` — the exhaustive classification matrix
+
+`_classifyTrip()` decides what every trip pays, and **both** the panel and the MIS call it, so a bug here
+is a bug in both, silently and identically. This walks the **full cross product** of the eight fields
+that can influence the answer —
+
+```
+route_scope(5) × billing_type_system(3) × billing_type_final(3) × billing_type_resolved(3)
+  × challan_type(4) × challan_type_final(4) × total_trip_km(2) × km_accumulated_flag(3)
+  = 12,960 combinations
+```
+
+— and compares each one against an **independent oracle** written from `docs/ZONAL_LOCAL_SCHEMA.md`
+(§2 amount matrix, §3 classifier, §4c precedence) rather than from the code. When the code and the spec
+disagree, it names the exact combination.
+
+It also asserts that all eight outcome shapes are actually reached (Local/Zonal × Regular/Adhoc × RTO),
+so the matrix cannot pass by never exercising a branch.
+
+## `_paritytest.js` — the panel and the MIS cannot disagree
+
+The vendor sees numbers from `_buildVendorPayload`. Finance pays numbers from `buildBillingModel`. The
+whole design rests on those being incapable of disagreeing, and **nothing asserted it** until this file.
+Per local contract, per RFQ, and in total: `regKm`, adhoc money, zonal money, trip counts, and both grand
+totals. Plus: every trip the vendor sees is on some MIS tab, the MIS bills no trip the vendor was never
+shown, and no trip appears twice on either side.
+
+**This is the harness that found the ₹17,000 double-bill** (see `docs/DECISIONS.md`, 2026-08-11): all 11
+zonal trips were landing in the MIS Other-Adhoc orphan bucket *as well as* the Zonal tab, because a zonal
+row has a blank `contract_id` by design and `_misReadSource()` had no zonal filter where `Code.gs` did.
+
+## `_billtest.js` — the MIS side
+
+| Area | Checks |
+|---|---|
+| Zonal survives a blank contract_id | zonal is still read, nothing is orphaned (vendor comes from `transporter_oracle_id`) |
+| No leakage | no zonal trip and no zonal field reaches a local contract record — no slab, vehicle row or utilisation % is touched |
+| Per-RFQ lines | zonal groups into one line per `rfq_id`; the lines sum exactly to the Zonal subtotal |
+| Independent zonal cross-check | every RFQ line and the zonal total are compared against a hand-rolled sum read straight off the CSV |
+| **Independent adhoc cross-check** | `totals.adhoc` and the Other-Adhoc bucket are each summed independently off the CSV, and no zonal row may appear in `d.trips`, `d.orphans` or the bucket. **Added 2026-08-11** — the old check was `payable === fixed+excess+adhoc+zonal`, which is vacuous (every term comes from the same object) and held happily while ₹17,000 was billed twice |
+| No double count | `payable` is compared against an independently summed payable, and asserted **not** to be the ₹548,250 the double-bill produced |
+| The blank-RFQ gate | blanks an `rfq_id` at runtime and asserts the gate flips to `WARN`, that the message names the problem, that the trip still gets a visible `(no RFQ id)` line, and that the money does not move |
+
+## `_guardtest.js` — every refusal path
+
+The other harnesses test what happens when things go right. These are the paths that fire when they go
+wrong, and they are the ones protecting the money. Every case runs the **real** function against an
+in-memory sheet with a frozen clock.
+
+| Area | Checks |
+|---|---|
+| `transferReadyTrips` — the ground window | a trip inside its window does not transfer but its derived `ground_review_deadline` **is** persisted; no `trip_end_time` means no transfer and no invented deadline; an already-flagged trip is skipped, not logged twice; an engine-set future deadline is respected even when `trip_end_time` is old |
+| — the transfer itself | opens `dispute_window_end`, defaults `vendor_status = Pending`, stamps `sent_to_vendor_timestamp`, and writes `Ground_Confirmation_Log` **before** the flag so a log failure is retryable |
+| — `ZONAL_NOT_EDITABLE` | a ground `billing_type_final` / `replaced_default_vehicle_final` on a zonal trip is cleared, the log names the **RFQ** (there is no contract_id), the row is flagged partial, and **the trip still transfers** — the edit is dropped, not the trip. Also asserts zonal is exempt from the reclassification guard, which would otherwise bounce every zonal trip |
+| — the hand-typed `billing_type_resolved` clear | cleared on **both** scopes, logged, flagged — and asserted to matter, since that column outranks everything and would otherwise let someone pay a trip ₹9,999 by typing in a cell |
+| — incomplete reclassification | a `Regular` edit on a non-default vehicle with no valid mapping is discarded and flagged `NEEDS_ATTRIBUTION_FIX`, with the message naming the contract the vehicle **actually** belongs to; a complete mapping is kept; `Regular` on an `ADHOC-` bucket is an attribution problem, not a billing one |
+| `applyConfirm` | ownership (another vendor's trip is not touched and not even logged), locking (Confirmed / Disputed / Reconfirmed are inert), `Reconfirm → Reconfirmed`, zonal logs its RFQ as the reference, unknown ids and a blank oracle write nothing |
+| `applyDispute` | ownership, locking, **the closed window throws** and writes nothing, a blank window is *open* not *closed*, and a `Reconfirm` trip can be re-disputed even though its window closed |
+| the dispute row | `claim_zonal_amount` / `claim_rfq_id` / `claim_challan_type` all land; the originals are snapshotted so ops sees was-vs-claimed; an unfilled claim stays **blank**, it does not become `0` |
+
+## `_importtest.js` — the CSV door, and door-equivalence
+
+There are **two** ways a resolution reaches `Trip_Level`: the in-sheet applier (`_flowtest`) and the CSV
+importer. They write the same columns, so a divergence would mean the same resolution pays differently
+depending on how ops submitted it. Nothing tested the CSV path at all.
+
+| Area | Checks |
+|---|---|
+| the header contract | empty / header-only / no-`dispute_id` CSVs are refused **and write nothing**; a header with stray spaces and mixed case still matches, because ops exports from Excel |
+| unmatched rows | reported and **named** in the return message, never invented; a blank id is skipped |
+| blank = unchanged | §G16: a blank `resolved_*` leaves the cell alone, but the trip still moves to `Reconfirm` and `resolved_at` is stamped |
+| zonal | `resolved_km` and `resolved_aggregate_vehicle` are ignored *and said so*; `resolved_zonal_amount` applies; `resolved_rfq_id` corrects the reference; `resolved_contract_id` is **not** written to a zonal row |
+| the refusal | a flip to Adhoc with a blank `adhoc_amount` and no `resolved_amount` is refused, and the trip keeps paying its ₹5,300 instead of dropping to ₹0. The same flip **with** an amount is accepted, writes `billing_type_resolved` (never `_final`), and pays ₹6,100 |
+| the RTO lever | `resolved_challan_type` writes `challan_type_final` on **both** scopes |
+| **equivalence** | six scenarios run through *both* doors, and the entire `Trip_Level` snapshot must be byte-identical, with the same payable, billing type, RTO state and slab treatment |
+| idempotency | `resolved_at` makes the in-sheet applier inert on a second run (safe on a timer); an `Open` row is never applied, even with `resolved_km` already filled |
+
+## `_datetest.js` — the quiet failure mode
+
+Nothing in this system shouts when a date is wrong: `_toDate` returns `null`, the period gate opens
+instead of closing, the projection divides by a 235-day window instead of a 31-day one, and every number
+downstream is plausible and wrong.
+
+**This harness found the root cause of the two live date findings — they are one bug wearing two faces.**
+If ops types the Indian format as text, JS reads `dd-mm-yyyy` as `mm-dd-yyyy` whenever the day is ≤ 12:
+
+- `"01-08-2026"` (1 August) parses **silently as 8 January** → the live `contract_start_date` of `2026-01-08`
+- `"31-08-2026"` has no valid month to map to, so it returns **null** → the live unreadable `contract_end_date`
+
+The boundary is the 12th: `dd ≤ 12` parses **wrongly**, `dd > 12` fails **loudly**. Never store dates as
+text. The file also pins `_misInPeriod` (fail-open on an unreadable date so a trip is never silently
+dropped, inclusive boundaries, `trip_end_time` fallback) and `_projFields` (the exact midpoint arithmetic,
+the OVER/UNDER 2%/10% thresholds, a zero slab, a zero-KM contract, and a contract that has not started).
+
+## `_rtotest.js` — the RTO resolution table
+
+Was print-only, so it could never fail. Now 75 assertions covering the payable outcome of every
+resolution lever on all four scope × billing combinations, including six statements of the **ONE RTO
+RULE**: no `resolved_*` value pays an RTO trip. `resolved_challan_type` is the only lever, because
+`payable = rto ? 0 : …` is applied first.
+
+Two facts worth knowing before resolving one:
+
+- On **LOCAL REGULAR**, lifting the RTO alone earns the vendor nothing — the KM is still 0, so
+  `resolved_km` is required too. On the other three combinations the amount is already on the row, so
+  `resolved_challan_type` alone is enough.
+- The trap: the test is `startsWith('rto')`, not `contains`. `"RTO cancelled"` still reads as an RTO and
+  still pays ₹0. `"Not RTO"` and `"Forward Only"` are safe.
+
+It also asserts the vendor-facing shape: the RTO claim rides on the existing **"Wrong KM / Amount"**
+reason rather than a category called "Not an RTO Trip", and `claim_challan_type` survives all three hops.
 
 ## `_apitest.js` — the hop nothing else covers
 
@@ -54,7 +197,7 @@ stops at the POST body) nor `_billtest` could see it.
 
 **Any new `claim_*` field must be added in all three places.** This test is what tells you when it isn't.
 
-## What it asserts
+## `_uitest.js` — the panel
 
 | Area | Checks |
 |---|---|
@@ -70,26 +213,7 @@ stops at the POST body) nor `_billtest` could see it.
 | Layout | the trip table sits in a `.tscroll` scroller and the page itself never scrolls sideways |
 | CSV | `downloadCSV()` builds and carries the Route Scope column |
 | Zonal identity | every zonal row in `demo-data/Trip_Level.csv` has a **blank `contract_id`**, matching production. Asserts cards are keyed `ZONAL::<rfq_id>`, one per RFQ, no duplicates, no internal id leaks, and no separate contract-id field in the dispute modal |
-| Per-trip reference | the `Contract / RFQ ID` column shows each trip's **own** reference — never the bucket card's name — matches `t.ref` from the payload row for row, tints zonal teal, and is present on every panel whose trips span more than one reference. Header and body cell counts are checked to agree on both a local and an all-zonal panel |
-
-## `_billtest.js` — the MIS side
-
-| Area | Checks |
-|---|---|
-| Zonal survives a blank contract_id | zonal is still read, nothing is orphaned (vendor comes from `transporter_oracle_id`) |
-| No leakage | no zonal trip and no zonal field reaches a local contract record — no slab, vehicle row or utilisation % is touched |
-| Per-RFQ lines | zonal groups into one line per `rfq_id`; the lines sum exactly to the Zonal subtotal |
-| Independent cross-check | every RFQ line and the zonal total are compared against a hand-rolled sum read straight off the CSV, so a bug in `Billing.gs` cannot hide behind itself |
-| No double count | `payable = fixed + excess + adhoc + zonal`, with zonal counted once |
-| The blank-RFQ gate | blanks an `rfq_id` at runtime and asserts the gate flips to `WARN`, that the message names the problem, that the trip still gets a visible `(no RFQ id)` line, and that the money does not move |
-
-
-## Adding a case
-
-`_mkpayload.js` clones a few edge shapes the demo CSVs do not contain (Local Adhoc RTO, a zonal trip
-with a blank `rfq_id`, a zonal trip with `km` and `amt` deleted entirely — the exact shape that printed
-`Current KM: null km`). Add new shapes there; `_uitest.js` discovers trip kinds from the payload, so a
-new kind is picked up automatically.
+| Per-trip reference | the `Contract / RFQ ID` column shows each trip's **own** reference — never the bucket card's name — matches `t.ref` from the payload row for row, tints zonal teal, and is present on every panel whose trips span more than one reference |
 
 ## `_resolvetest.js` — does an upheld dispute actually change anything?
 
@@ -114,3 +238,27 @@ Regular→Adhoc flip, an RTO lifted on both scopes, a still-Open dispute that mu
 second run proving `resolved_at` makes it idempotent.
 
 See `docs/DISPUTE_RESOLUTION_RUNBOOK.md` for the human-facing version of the same flow.
+
+## Adding a case
+
+`_mkpayload.js` clones a few edge shapes the demo CSVs do not contain (Local Adhoc RTO, a zonal trip with
+a blank `rfq_id`, a zonal trip with `km` and `amt` deleted entirely — the exact shape that printed
+`Current KM: null km`). Add new shapes there; `_uitest.js` discovers trip kinds from the payload, so a new
+kind is picked up automatically.
+
+For a new **rule**, prefer `_matrixtest.js`: add the field to its axes and the rule to its `ORACLE()`, and
+all 12,960 combinations re-check themselves.
+
+## What is still not covered
+
+Stated plainly, so it is a known gap rather than a blind spot:
+
+- **`syncToUpstash` / `/api/data`** — the snapshot hop is exercised only through a stub. A sync that
+  silently pushes a stale or truncated payload would not be caught here.
+- **Google Sheets I/O itself** — `_readTab` and `_setCell` are replaced by in-memory equivalents in every
+  harness, so a real range/permission/quota error is out of scope.
+- **The Apps Script menu wrappers** (`syncNowFromMenu`, `drainAndSyncFromMenu`, `importResolvedDisputes`'s
+  Drive fetch) — the UI prompt layer is stubbed; the functions they call are all covered.
+- **Live master data.** These harnesses run on `demo-data/`. They prove the *code* is right; they cannot
+  prove the *sheet* is. `docs/SANITY_CHECK_CONTRACTS_2026-08.md` is the live-data counterpart, and its
+  five findings are still open.

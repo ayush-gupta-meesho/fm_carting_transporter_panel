@@ -575,6 +575,12 @@ function _misReadSource() {
 
   var trips = {}, orphans = {};
   tl.forEach(function (t) {
+    // ZONAL IS NOT A LOCAL TRIP. A zonal row carries NO contract_id by design (its rfq_id is the
+    // contract reference), so without this guard every zonal trip fails the info[cid] test, falls
+    // through to the orphan bucket, and gets billed a SECOND time as Other/Adhoc on top of
+    // totals.zonal. Code.gs already filters zonal out of its own orphan bucket (localAll); this is
+    // the same filter, and the two must stay identical or the panel and the MIS disagree.
+    if (_low(_s(t.route_scope) || 'Local') === 'zonal') return;   // handled by the zonal pass below
     var cid = _s(t.contract_id);
     if (info[cid]) { (trips[cid] = trips[cid] || []).push(t); return; }
     var orc = _s(t.transporter_oracle_id);

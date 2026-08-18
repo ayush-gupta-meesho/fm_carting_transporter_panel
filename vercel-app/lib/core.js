@@ -30,6 +30,40 @@ const rsetex = (k, ttl, v) => redis(['SET', k, v, 'EX', String(ttl)]);
 const rdel   = (k) => redis(['DEL', k]);
 const rpush  = (k, v) => redis(['RPUSH', k, v]);   // append action to a queue list
 
+/* ── un-drained vendor actions ────────────────────────────────────────────────────────────────────
+ * A vendor's Confirm / Dispute is not written to the Sheet by the panel. /api/action only appends the
+ * action to the Upstash list "actions"; drainActions() applies it later and syncToUpstash() then
+ * rewrites the vendor snapshot. Between those two moments the snapshot still says "Pending" — so a
+ * page refresh made the trip revert to Pending Confirmation on the dashboard.
+ *
+ * This reads the queue NON-DESTRUCTIVELY (LRANGE, never LPOP — only drainActions may consume it) and
+ * returns this vendor's un-drained actions as trip_id -> intended status. /api/data uses it to overlay
+ * the snapshot; /api/action uses it to reject a duplicate. Self-clearing: once the drain pops the
+ * action and re-syncs, the queue no longer carries it and the snapshot carries the truth.
+ */
+const ACTION_QUEUE = 'actions';   // MUST match ACTION_QUEUE in Actions.gs and the rpush() in action.js
+
+async function pendingVendorActions(oracle) {
+  let rows;
+  try { rows = await redis(['LRANGE', ACTION_QUEUE, '0', '-1']); }
+  catch (e) { return {}; }                       // queue unreadable -> caller serves the snapshot as-is
+  if (!Array.isArray(rows) || !rows.length) return {};
+
+  const out = {};                                // trip_id -> 'confirmed' | 'disputed'
+  rows.forEach((raw) => {
+    let a;
+    try { a = JSON.parse(raw); } catch (e) { return; }        // a malformed row must not break the read
+    if (!a || String(a.oracle) !== String(oracle)) return;    // never surface another vendor's action
+    if (a.type === 'confirm') {
+      (Array.isArray(a.trip_ids) ? a.trip_ids : []).forEach((id) => { out[String(id)] = 'confirmed'; });
+      if (a.trip_id) out[String(a.trip_id)] = 'confirmed';
+    } else if (a.type === 'dispute' && a.trip_id) {
+      out[String(a.trip_id)] = 'disputed';       // a dispute after a confirm is the later intent
+    }
+  });
+  return out;
+}
+
 /* ---------------- JWT (HS256) ---------------- */
 function b64url(buf) {
   return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -89,7 +123,7 @@ async function readBody(req) {
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || '').trim().toLowerCase());
 
 module.exports = {
-  rget, rsetex, rdel, rpush, redis,
+  rget, rsetex, rdel, rpush, redis, pendingVendorActions,
   signJwt, verifyJwt, sessionFromReq, sessionCookie, clearCookie,
   parseCookies, readBody, validEmail, SESSION_TTL,
 };

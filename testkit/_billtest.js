@@ -112,12 +112,82 @@ ck(adG.length===1&&adG[0].regN===0,'the adhoc group contains no Regular trip');
 ck(Object.keys(indep.byRfq).filter(k=>k!=='(no RFQ id)').length===rfqG.length,
    'every real RFQ in the data has a line ('+rfqG.length+')');
 
+/* ---- REGRESSION 2026-08-11: totals.adhoc, summed independently off the CSV ----------------------
+   The check below used to be `payable === fixed+excess+adhoc+zonal` and nothing else, which is
+   vacuous: every term comes from the same object, so it holds no matter how wrong `adhoc` is. It
+   held while all 11 zonal trips were ALSO being counted into totals.adhoc through the Other-Adhoc
+   orphan bucket (a zonal trip has a blank contract_id, so it failed the info[cid] test in
+   _misReadSource and fell through), double-billing ₹17,000 and inflating payable to ₹548,250.
+   This sums LOCAL adhoc money from the raw CSV, the way the spec says, and never trusts Billing.gs.
+*/
+const ci=readCsv('Contract_Info.csv');
+const cvRows=readCsv('Contract_Vehicles.csv');
+const myCids={}; ci.forEach(c=>{ if(String(c.vendor_oracle_id||'').trim()===ORC) myCids[String(c.contract_id||'').trim()]=1; });
+const infoCids={}; ci.forEach(c=>{ const k=String(c.contract_id||'').trim(); if(k) infoCids[k]=String(c.vendor_oracle_id||'').trim(); });
+function indepClass(t,defBilling){
+  const st=v=>String(v==null?'':v).trim(), lc=v=>st(v).toLowerCase();
+  const nm=v=>{ const n=parseFloat(st(v).replace(/,/g,'')); return isNaN(n)?0:n; };
+  const isZonal=lc(st(t.route_scope)||'Local')==='zonal';
+  const billing=st(t.billing_type_resolved)||(isZonal?'':st(t.billing_type_final))
+              ||st(t.billing_type_system)||defBilling;
+  const isAdhoc=lc(billing)==='adhoc';
+  const cf=lc(t.challan_type_final);
+  const km=nm(t.total_trip_km);
+  const rto=cf?cf.indexOf('rto')===0
+    :(lc(t.challan_type).indexOf('rto')===0
+      ||(lc(t.km_accumulated_flag)!=='yes'&&km===0&&!isAdhoc&&st(t.km_accumulated_flag)!==''));
+  return {isZonal:isZonal,isAdhoc:isAdhoc,rto:rto,
+          amt:rto?0:(isAdhoc?nm(t.adhoc_amount):0)};
+}
+let indepAdhoc=0, indepAdhocN=0, indepBucket=0, indepBucketN=0;
+tl.forEach(t=>{
+  if(String(t.transporter_oracle_id||'').trim()!==ORC) return;
+  if(String(t.route_scope||'Local').trim().toLowerCase()==='zonal') return;  // zonal is NOT adhoc money
+  const cid=String(t.contract_id||'').trim();
+  const mine=!!infoCids[cid];
+  const x=indepClass(t, mine?'Regular':'Adhoc');   // the orphan bucket defaults to Adhoc
+  if(!x.isAdhoc) return;
+  if(mine){ indepAdhoc+=x.amt; indepAdhocN++; } else { indepBucket+=x.amt; indepBucketN++; }
+});
+console.log('\n── independent LOCAL adhoc sum off the CSV ──');
+console.log('  on-contract adhoc: '+indepAdhocN+' trip(s) ₹'+R(indepAdhoc)
+  +'   ·   orphan bucket: '+indepBucketN+' trip(s) ₹'+R(indepBucket)
+  +'   =   ₹'+R(indepAdhoc+indepBucket));
+console.log('  Billing.gs totals.adhoc: ₹'+R(m.totals.adhoc)
+  +'   (bucket ₹'+R(m.bucket?m.bucket.adhocAmt:0)+' over '+(m.bucket?(m.bucket.trips||[]).length:0)+' row(s))');
+ck(R(m.totals.adhoc)===R(indepAdhoc+indepBucket),
+   'totals.adhoc matches the independent CSV sum (₹'+R(m.totals.adhoc)+' vs ₹'+R(indepAdhoc+indepBucket)+')');
+ck(R(m.bucket?m.bucket.adhocAmt:0)===R(indepBucket),
+   'the Other-Adhoc bucket holds exactly the off-contract adhoc money (₹'+R(indepBucket)+')');
+/* the bug itself, named: a zonal trip must never reach the local trips map or the orphan bucket */
+const zonalInBucket=(m.bucket?(m.bucket.trips||[]):[]).filter(b=>{
+  const src=tl.filter(t=>String(t.trip_id||'').trim()===String(b.id||'').trim())[0];
+  return src && String(src.route_scope||'').trim().toLowerCase()==='zonal';
+});
+ck(zonalInBucket.length===0,'no zonal trip is inside the Other-Adhoc bucket ('
+  +zonalInBucket.length+' found'+(zonalInBucket.length?': '+zonalInBucket.slice(0,3).map(x=>x.id).join(', '):'')+')');
+let zonalInLocal=0;
+Object.keys(d.trips||{}).forEach(cid=>(d.trips[cid]||[]).forEach(t=>{
+  if(String(t.route_scope||'').trim().toLowerCase()==='zonal') zonalInLocal++; }));
+let zonalInOrphans=0;
+Object.keys(d.orphans||{}).forEach(o=>(d.orphans[o]||[]).forEach(t=>{
+  if(String(t.route_scope||'').trim().toLowerCase()==='zonal') zonalInOrphans++; }));
+console.log('  zonal rows leaked into d.trips: '+zonalInLocal+' · into d.orphans: '+zonalInOrphans);
+ck(zonalInLocal===0,'_misReadSource puts no zonal row in the local trips map');
+ck(zonalInOrphans===0,'_misReadSource puts no zonal row in the orphan map (the ₹17,000 double-bill)');
+
 /* payable = fixed + excess + adhoc + zonal, no double count */
 const expect=m.totals.fixed+m.totals.excessAmt+m.totals.adhoc+m.totals.zonal;
 console.log('\n── totals ──');
 console.log('  fixed ₹'+R(m.totals.fixed)+' · excess ₹'+R(m.totals.excessAmt)+' · adhoc ₹'+R(m.totals.adhoc)
   +' · zonal ₹'+R(m.totals.zonal)+'  =  PAYABLE ₹'+R(m.totals.payable));
 ck(R(m.totals.payable)===R(expect),'payable is the sum of its four parts, zonal counted once');
+/* and an independent payable, so the four parts cannot all drift together */
+const indepPayable=m.totals.fixed+m.totals.excessAmt+(indepAdhoc+indepBucket)+indep.zonal;
+console.log('  independent payable (fixed+excess from vehicle rows, adhoc+zonal from the CSV): ₹'+R(indepPayable));
+ck(R(m.totals.payable)===R(indepPayable),
+   'payable matches an independently summed payable (₹'+R(m.totals.payable)+' vs ₹'+R(indepPayable)+')');
+ck(R(m.totals.payable)!==548250,'payable is NOT the ₹548,250 figure the double-bill produced');
 
 /* the blank-rfq gate */
 const gates=runGates(m,d)||[];
