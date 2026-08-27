@@ -87,6 +87,16 @@ function _low(v) { return _s(v).toLowerCase(); }
 function _num(v) { var n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
 function _yes(v) { var s = _low(v); return s === 'yes' || s === 'true' || s === 'y' || s === '1'; }
 
+/* First argument that is actually filled in. Needed because `_num(a) || _num(b)` treats a legitimate
+   resolved value of 0 as "not set" and silently falls through to the system value. Resolution
+   precedence has to distinguish "blank" from "zero" — a dispute resolved to 0 km is a real outcome. */
+function _firstSet() {
+  for (var i = 0; i < arguments.length; i++) {
+    if (_s(arguments[i]) !== '') return arguments[i];
+  }
+  return '';
+}
+
 function _tz() { return _ss().getSpreadsheetTimeZone() || Session.getScriptTimeZone() || 'Asia/Kolkata'; }
 
 // "3 Jul 2026, 11:53 pm"
@@ -342,7 +352,17 @@ function _classifyTrip(t, defSet, defaultBilling) {
     || _s(t.billing_type_system) || (defaultBilling || 'Regular');
   var isAdhoc = _low(billing) === 'adhoc';
 
-  var km      = _num(t.total_trip_km);
+  /* KM PRECEDENCE:  resolution > system.   (2026-08-27)
+   * Until now this read total_trip_km alone, and the resolution appliers wrote resolved_km straight
+   * INTO total_trip_km — destroying the system value, leaving no audit trail, and losing the
+   * correction outright whenever the applier ran before resolved_km was filled in. Every other
+   * resolvable field already has its own destination (billing_type_resolved, challan_type_final,
+   * zonal_rfq_amount_final, replaced_default_vehicle_final); KM and the adhoc amount were the only
+   * two written destructively. They now have one too, and this is what reads it.
+   * Ground deliberately gets NO km column: there is no total_trip_km_final and must not be one. */
+  var kmSys   = _num(t.total_trip_km);
+  var kmRes   = _s(t.total_trip_km_resolved);
+  var km      = kmRes !== '' ? _num(kmRes) : kmSys;
   var cf      = _low(t.challan_type_final);      // ground override of RTO wins over the system column
   var rto     = cf ? (cf.indexOf('rto') === 0)
                    : (_low(t.challan_type).indexOf('rto') === 0 ||
@@ -356,7 +376,10 @@ function _classifyTrip(t, defSet, defaultBilling) {
   // ---- money ----------------------------------------------------------------------------------
   // zonalAmt is the RESOLVED zonal rate (an upheld dispute wins over the system value).
   var zonalAmt = _num(t.zonal_rfq_amount_final) || _num(t.zonal_rfq_amount);
-  var adhocAmt = _num(t.adhoc_amount);
+  // same precedence as KM, same reason — see the comment on kmRes above
+  var amtSys   = _num(t.adhoc_amount);
+  var amtRes   = _s(t.adhoc_amount_resolved);
+  var adhocAmt = amtRes !== '' ? _num(amtRes) : amtSys;
   // ONE RTO RULE: an RTO trip pays nothing, whatever its scope or billing type. Confirmed 2026-08-07.
   var payable  = rto ? 0 : (isAdhoc ? adhocAmt : (isZonal ? zonalAmt : 0));
   // Only Local + Regular + non-RTO KM ever reaches the grouped KM slab.
@@ -375,6 +398,11 @@ function _classifyTrip(t, defSet, defaultBilling) {
     billing:   isAdhoc ? 'Adhoc' : 'Regular',
     isAdhoc:   isAdhoc,
     km:        km,
+    /* kmWas / amtWas = the SYSTEM value a resolution replaced, or null when nothing was resolved.
+       The panel shows it as "revised from N km" so the vendor can see the correction landed, and the
+       MIS can show what changed. Never bill off these — bill off km / payable. */
+    kmWas:     (kmRes !== '' && _num(kmRes) !== kmSys) ? kmSys : null,
+    amtWas:    (amtRes !== '' && _num(amtRes) !== amtSys) ? amtSys : null,
     rto:       rto,
     isRepl:    isRepl,
     isDefault: (!!no && !!defSet[no]),
@@ -516,11 +544,20 @@ function _buildVendorPayload(oracle, opts) {
         completed: _fmtShort(t.trip_end_time),
         km:        isAdhoc ? null : (rto ? 0 : km),
         amt:       isAdhoc ? _x.payable : null,          // RTO adhoc pays 0 — screen must match the bill
+        /* the value a resolution replaced, so the row can say "revised from N". null = nothing was
+           resolved. The View-Dispute dialog is not enough on its own: it is only reachable while the
+           trip is still open, so once the vendor accepts, the row itself has to carry the evidence. */
+        kmWas:     isAdhoc ? null : (rto ? null : _x.kmWas),
+        amtWas:    isAdhoc ? _x.amtWas : null,
         rto:       rto ? true : undefined,
         challan:   _s(t.challan_type_final) || _s(t.challan_type),   // shown when disputing an RTO trip
         status:    _x.statusUi,
         win:       _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         winTs:     _s(t.dispute_window_end),   // raw + comparable; blank = no window recorded = open
+        // admin-only in practice: a vendor payload is already filtered to sent rows, so this is
+        // always true there. On the ADMIN payload (allTrips) it is the ONLY way to tell a trip that
+        // has been transferred from one that has not — vendor_status reads 'Pending' for both.
+        sent:      _yes(t.sent_to_vendor_flag),
         disp:      dmap[_s(t.trip_id)] || null
       };
     });
@@ -594,11 +631,16 @@ function _buildVendorPayload(oracle, opts) {
       replTag: 'default', replFor: undefined,
       completed: _fmtShort(t.trip_end_time),
       km: null, amt: null, zamt: zx.payable,
+      kmWas: null, amtWas: zx.amtWas,     // zonal has no KM slab; a zonal adhoc amount can be resolved
       rto: zx.rto ? true : undefined,
       challan: _s(t.challan_type_final) || _s(t.challan_type),
       status: zx.statusUi,
       win: zx.settled ? null : _fmtWin(t.dispute_window_end),
       winTs: _s(t.dispute_window_end),
+      // admin-only in practice: a vendor payload is already filtered to sent rows, so this is
+      // always true there. On the ADMIN payload (allTrips) it is the ONLY way to tell a trip that
+      // has been transferred from one that has not — vendor_status reads 'Pending' for both.
+      sent: _yes(t.sent_to_vendor_flag),
       disp: dmap[_s(t.trip_id)] || null
     };
     if (zx.isAdhoc) {
@@ -672,10 +714,15 @@ function _buildVendorPayload(oracle, opts) {
         replTag: 'default', replFor: undefined,
         completed: _fmtShort(t.trip_end_time), km: isAdhoc ? null : (rto ? 0 : km),
         amt: isAdhoc ? _x.payable : null, rto: rto ? true : undefined,
+        kmWas: isAdhoc ? null : (rto ? null : _x.kmWas), amtWas: isAdhoc ? _x.amtWas : null,
         challan: _s(t.challan_type_final) || _s(t.challan_type),
         status: _x.statusUi,
         win: _low(t.vendor_status) === 'confirmed' ? null : _fmtWin(t.dispute_window_end),
         winTs: _s(t.dispute_window_end),
+        // admin-only in practice: a vendor payload is already filtered to sent rows, so this is
+        // always true there. On the ADMIN payload (allTrips) it is the ONLY way to tell a trip that
+        // has been transferred from one that has not — vendor_status reads 'Pending' for both.
+        sent: _yes(t.sent_to_vendor_flag),
         disp: dmap[_s(t.trip_id)] || null
       };
     });
@@ -741,7 +788,7 @@ function _buildRoute(t) {
 var TAB_SCHEMA = {
     'Contract_Info': ['contract_id','vendor_oracle_id','vendor_name','cluster','vehicle_size','hours_slab','no_of_vehicles','total_km_slab','fixed_monthly_value','ex_km_rate','contract_start_date','contract_end_date','contract_status'],
     'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','default_vehicle_id','start_date','end_date'],
-    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','billing_type_resolved','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state'],
+    'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','billing_type_resolved','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state','total_trip_km_resolved','adhoc_amount_resolved'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
     'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
     'Disputes_Log': ['dispute_id','row_id','trip_id','contract_id','transporter_oracle_id','vendor_name','raised_at','categories','claim_billing_type','claim_aggregate_vehicle','claim_km','claim_amount','claim_zonal_amount','claim_rfq_id','claim_challan_type','claim_contract_id','vendor_description','proof_url','callback_number','orig_vehicle_number','orig_vehicle_size','orig_trip_cluster','orig_route','orig_route_scope','orig_rfq_id','orig_completed_time','orig_billing_type','orig_replaced_default_vehicle','orig_total_km','orig_adhoc_amount','orig_challan_type','orig_zonal_rfq_amount','dispute_status','resolution_note','resolved_billing_type','resolved_km','resolved_amount','resolved_zonal_amount','resolved_rfq_id','resolved_challan_type','resolved_aggregate_vehicle','resolved_contract_id','resolved_at','resolved_by','reconfirm_status'],
@@ -863,6 +910,7 @@ function onOpen() {
     .addItem('3 · Refresh panel data (sync only)', 'syncNowFromMenu')
     .addItem('4 · Apply vendor actions NOW (drain + sync)', 'drainAndSyncFromMenu')
     .addItem('5 · Import resolved disputes (CSV)', 'importResolvedDisputes')
+    .addItem('5a · Repair missed resolutions (dry run first)', 'repairMissedResolutionsFromMenu')
     .addSeparator()
     .addItem('6 · Turn ON auto-apply (drain + sync, 10 min)', 'createDrainSyncFromMenu')
     .addItem('7 · Stop auto-apply', 'stopSyncFromMenu')

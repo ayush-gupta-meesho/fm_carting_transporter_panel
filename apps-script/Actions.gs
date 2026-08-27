@@ -424,9 +424,9 @@ function _applyResolvedRows(rows) {
         if (_nb === 'adhoc' && !_num(get(r, 'resolved_amount')) && !_num(tl.values[tr][tl.idx['adhoc_amount']])) {
           notes.push('ZONAL ' + tripId + ': REFUSED flip to Adhoc \u2014 adhoc_amount is blank and no resolved_amount given; the trip would pay 0. Fill resolved_amount and re-run.');
         } else {
-          // billing_type_RESOLVED, not _final: ground owns _final and must never be able to fake this
+            // billing_type_RESOLVED, not _final: ground owns _final and must never be able to fake this
           ow('billing_type_resolved', get(r, 'resolved_billing_type'));
-          ow('adhoc_amount', get(r, 'resolved_amount'));
+          ow('adhoc_amount_resolved', get(r, 'resolved_amount'));
         }
         if (get(r, 'resolved_km') || get(r, 'resolved_aggregate_vehicle')) {
           notes.push('ZONAL ' + tripId + ': ignored resolved_km / resolved_aggregate_vehicle (no KM slab and no vehicle level on zonal)');
@@ -434,8 +434,11 @@ function _applyResolvedRows(rows) {
       } else {
         // same column on local as on zonal: resolution > ground > system, one destination
         ow('billing_type_resolved', get(r, 'resolved_billing_type'));
-        ow('total_trip_km', get(r, 'resolved_km'));
-        ow('adhoc_amount', get(r, 'resolved_amount'));
+        /* total_trip_km_RESOLVED, not total_trip_km. Writing into the system column destroyed the
+           original, left no audit trail, and made the correction vulnerable to any re-push of
+           Trip_Level. _classifyTrip reads resolved-then-system. (2026-08-27) */
+        ow('total_trip_km_resolved', get(r, 'resolved_km'));
+        ow('adhoc_amount_resolved', get(r, 'resolved_amount'));
         ow('replaced_default_vehicle_final', get(r, 'resolved_aggregate_vehicle'));
       }
       // the billing reference: contract_id on local, rfq_id on zonal (a zonal row has no contract_id)
@@ -458,6 +461,30 @@ function _applyResolvedRows(rows) {
 }
 
 
+/* Every column ops can put a correction in. Used to decide whether a Resolved row actually carries a
+ * resolution, and by repairMissedResolutions(). One list, so the two cannot drift. */
+/* Is a resolved value already sitting in its destination cell?
+ *
+ * The numeric leg is deliberately strict. A first cut compared _num(cur) === _num(v) whenever both
+ * sides merely CONTAINED a digit, and _num() strips non-numerics — so "RJK7-X" and "RJK10-Y" both
+ * reduced to 0 and a contract_id correction was silently treated as already applied. Only compare as
+ * numbers when both sides ARE numbers; everything else is an exact string match. The point of the
+ * numeric leg at all is that a sheet cell holding 180 and a CSV string "180" are the same value, and
+ * "180.0" vs 180 must not cause an endless rewrite. */
+var _NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+function _sameCell(cur, v) {
+  cur = _s(cur); v = _s(v);
+  if (cur === v) return true;
+  if (cur === '' || v === '') return false;
+  if (_NUMERIC_RE.test(cur.replace(/,/g, '')) && _NUMERIC_RE.test(v.replace(/,/g, ''))) {
+    return Number(cur.replace(/,/g, '')) === Number(v.replace(/,/g, ''));
+  }
+  return false;
+}
+
+var _RESOLVED_COLS = ['resolved_billing_type', 'resolved_km', 'resolved_amount', 'resolved_zonal_amount',
+  'resolved_rfq_id', 'resolved_challan_type', 'resolved_aggregate_vehicle', 'resolved_contract_id'];
+
 /* ==================================================================================================
  * IN-SHEET resolution (no CSV) — the resolution team edits Disputes_Log directly.
  * TRIGGER : set  dispute_status = "Resolved"  on the dispute row (after filling the resolved_* cells).
@@ -471,21 +498,69 @@ function _applyResolvedRows(rows) {
 function applyResolutionsFromSheet() {
   var dl = _ctx(LOG_TABS.disputes, 'dispute_id');
   var tl = _ctx(TABS.tripLevel, 'trip_id');
-  var applied = 0, notes = [], now = _nowIso();
+  var applied = 0, reconciled = 0, firstPassWrites = 0, notes = [], now = _nowIso();
   var val = function (row, c) { return dl.idx[c] !== undefined ? _s(dl.values[row][dl.idx[c]]) : ''; };
 
   for (var i = dl.headerRow + 1; i < dl.values.length; i++) {
     var did = val(i, 'dispute_id'); if (!did) continue;
     if (val(i, 'dispute_status').toLowerCase() !== 'resolved') continue;   // TRIGGER: human set Resolved
-    if (val(i, 'resolved_at')) continue;                                   // GUARD: already applied
+
+    /* resolved_at NO LONGER SKIPS THE ROW.  (2026-08-27 — this is the fix for 166 lost resolutions.)
+     *
+     * It used to: `if (val(i,'resolved_at')) continue;`. resolved_at was stamped at the top of this
+     * loop, unconditionally, before any resolved_* value was read. So the ordinary ops sequence —
+     * mark the dispute Resolved, then type the resolved_km — meant the applier fired on the still-empty
+     * row, stamped the guard, flipped the trip to Reconfirm, wrote nothing, and locked the row out of
+     * this function forever. The number then lived in Disputes_Log only: the panel's View-Dispute
+     * dialog read it, the trip row and the billing MIS never did. Silent, and worth 1,974 km on the
+     * live sheet.
+     *
+     * Now resolved_at gates only the ONE-TIME side effects — flipping the trip to Reconfirm and
+     * upserting Confirmation_Status_View — because those notify the vendor and must happen exactly
+     * once. The VALUE writes below run every pass and are idempotent: each resolved_* cell is compared
+     * to its Trip_Level destination and written only if it differs. That makes the function
+     * self-healing (a value filled in later still lands) while never reopening a trip the vendor has
+     * already accepted. */
+    var alreadyApplied = val(i, 'resolved_at') !== '';
 
     var tripId = val(i, 'trip_id');
-    _setCell(dl, i, 'resolved_at', now);                                   // stamp the guard
-    if (!val(i, 'reconfirm_status')) _setCell(dl, i, 'reconfirm_status', 'Pending Reconfirmation');
 
+    /* A Resolved row with nothing on it at all is almost always a half-finished edit — ops set the
+       status, then went to type the number. It is NOT skipped (a deliberate "reviewed, no change"
+       rejection is a real outcome and the vendor is owed the answer), but it IS called out, because
+       the number typed a minute later used to be lost forever. See the note on _RESOLVED_COLS. */
+    var _hasVal = _RESOLVED_COLS.some(function (c) { return val(i, c) !== ''; });
+    if (!_hasVal && val(i, 'resolution_note') === '') {
+      notes.push('EMPTY ' + did + ' (' + tripId + '): dispute_status is Resolved but every resolved_* '
+        + 'cell AND resolution_note are blank. The trip will re-surface to the vendor with no '
+        + 'correction on it. Fill a resolved_* value \u2014 it will still apply on a later run.');
+    }
+
+    if (!alreadyApplied) {
+      _setCell(dl, i, 'resolved_at', now);                                 // stamp: the vendor has been told
+      if (!val(i, 'reconfirm_status')) _setCell(dl, i, 'reconfirm_status', 'Pending Reconfirmation');
+    }
+
+    /* trip_id first, then row_id. The fallback is not hypothetical: one live dispute row carries the
+       row_id (with its _R suffix) in the trip_id column and matches no Trip_Level trip_id at all. */
     var tr = _findRowIndex(tl, 'trip_id', tripId);
-    if (tr < 0) { notes.push('no Trip_Level row for ' + tripId + ' (' + did + ')'); applied++; continue; }
-    var ow = function (tlCol, v) { if (v !== '') _setCell(tl, tr, tlCol, v); };
+    if (tr < 0) tr = _findRowIndex(tl, 'row_id', val(i, 'row_id') || tripId);
+    if (tr < 0) {
+      notes.push('NO TRIP ROW for ' + did + ' \u2014 trip_id "' + tripId + '", row_id "'
+        + val(i, 'row_id') + '" match no Trip_Level row. The resolution cannot be applied.');
+      if (!alreadyApplied) applied++;
+      continue;
+    }
+    /* ow() writes only when the destination actually differs, so re-running this function is free and
+       every pass reconciles. `changed` is what makes a reconcile pass reportable instead of silent. */
+    var changed = [];
+    var ow = function (tlCol, v) {
+      if (v === '' || tl.idx[tlCol] === undefined) return;
+      var cur = _s(tl.values[tr][tl.idx[tlCol]]);
+      if (_sameCell(cur, v)) return;
+      changed.push(tlCol + ': ' + (cur === '' ? '<blank>' : cur) + ' \u2192 ' + v);
+      _setCell(tl, tr, tlCol, v);
+    };
     // same zonal gate as the CSV importer — see the comment there
     var _rz2 = _low(_s(tl.values[tr][tl.idx['route_scope']]) || 'Local') === 'zonal';
     // same rules as the CSV importer above — see the comments there
@@ -498,7 +573,7 @@ function applyResolutionsFromSheet() {
       } else {
         // billing_type_RESOLVED, not _final — see the CSV importer
         ow('billing_type_resolved', val(i, 'resolved_billing_type'));
-        ow('adhoc_amount', val(i, 'resolved_amount'));
+        ow('adhoc_amount_resolved', val(i, 'resolved_amount'));
       }
       if (val(i, 'resolved_km') || val(i, 'resolved_aggregate_vehicle')) {
         notes.push('ZONAL ' + tripId + ': ignored resolved_km / resolved_aggregate_vehicle (no KM slab and no vehicle level on zonal)');
@@ -506,25 +581,40 @@ function applyResolutionsFromSheet() {
     } else {
       // same column on local as on zonal — see the CSV importer
       ow('billing_type_resolved', val(i, 'resolved_billing_type'));
-      ow('total_trip_km', val(i, 'resolved_km'));
-      ow('adhoc_amount', val(i, 'resolved_amount'));
+      ow('total_trip_km_resolved', val(i, 'resolved_km'));      // NOT total_trip_km — see the importer
+      ow('adhoc_amount_resolved', val(i, 'resolved_amount'));
       ow('replaced_default_vehicle_final', val(i, 'resolved_aggregate_vehicle'));
     }
     // the billing reference: contract_id on local, rfq_id on zonal (a zonal row has no contract_id)
     if (_rz2) ow('rfq_id', val(i, 'resolved_rfq_id'));
     else        ow('contract_id', val(i, 'resolved_contract_id'));
-    _setCell(tl, tr, 'vendor_status', 'Reconfirm');                        // re-surface to vendor
-    _upsertStatusView({
-      row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
-      contract_id: _billRef(tl, tr),
-      transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
-      route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
-      vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
-      reconfirm_status: 'Pending Reconfirmation', final_state: 'Pending Reconfirmation'
-    });
-    applied++;
+
+    /* THE ONE-TIME SIDE EFFECTS — gated on resolved_at, never repeated.
+       Re-surfacing a trip to the vendor is a notification, so it happens exactly once. On a reconcile
+       pass the trip keeps whatever status it has: a vendor who already accepted the correction stays
+       Reconfirmed and is not asked again. */
+    if (!alreadyApplied) {
+      _setCell(tl, tr, 'vendor_status', 'Reconfirm');                      // re-surface to vendor
+      _upsertStatusView({
+        row_id: _s(tl.values[tr][tl.idx['row_id']]), trip_id: tripId,
+        contract_id: _billRef(tl, tr),
+        transporter_oracle_id: _s(tl.values[tr][tl.idx['transporter_oracle_id']]),
+        route_scope: _s(tl.values[tr][tl.idx['route_scope']]) || 'Local',
+        vendor_status: 'Reconfirm', dispute_id: did, dispute_status: 'Resolved',
+        reconfirm_status: 'Pending Reconfirmation', final_state: 'Pending Reconfirmation'
+      });
+      applied++;
+      if (changed.length) firstPassWrites += changed.length;
+    } else if (changed.length) {
+      /* A late-filled resolution landing on an already-notified row. Under the old code this was the
+         silent data loss; now it is a reported repair. */
+      reconciled++;
+      notes.push('RECONCILED ' + did + ' (' + tripId + ', vendor_status '
+        + _s(tl.values[tr][tl.idx['vendor_status']]) + '): ' + changed.join(' | '));
+    }
   }
-  var msg = 'In-sheet resolutions applied: ' + applied;
+  var msg = 'In-sheet resolutions applied: ' + applied
+    + (reconciled ? ('\nLate-filled resolutions reconciled onto already-notified trips: ' + reconciled) : '');
   Logger.log(msg); if (notes.length) Logger.log(notes.join('\n'));
   return msg + (notes.length ? ('\n' + notes.join('\n')) : '');
 }
@@ -553,3 +643,141 @@ function createDrainSyncTrigger() {
   return 'Auto-apply is ON — vendor actions drain + sync automatically every 10 min. Use "Stop auto-apply" to turn off.';
 }
 function createDrainSyncFromMenu() { SpreadsheetApp.getUi().alert(createDrainSyncTrigger()); }
+
+
+/* ==================================================================================================
+ * REPAIR — re-apply resolutions that were stamped but never written  (added 2026-08-27)
+ *
+ * WHY THIS EXISTS.  applyResolutionsFromSheet() stamps resolved_at as its permanent "already applied"
+ * guard, and it used to stamp it BEFORE looking at whether any resolved_* value was present. Ops
+ * naturally marks a dispute Resolved first and types the number second, so the applier fired on the
+ * empty row, stamped the guard, flipped the trip to Reconfirm, wrote nothing, and locked the row out
+ * forever. The number then sat in Disputes_Log, visible in the panel's View-Dispute dialog and
+ * nowhere else. On the live sheet that was 166 Krushiv Enterprise rows / 1,974.216 km.
+ *
+ * The guard is now conditional, so this cannot recur. This function cleans up what it already cost.
+ *
+ * WHAT IT DOES.  For every Disputes_Log row that is Resolved and carries at least one resolved_*
+ * value, it writes that value into its destination column on Trip_Level if the destination does not
+ * already hold it. Idempotency is by COMPARING VALUES, not by a timestamp — so it is safe to run
+ * repeatedly and it deliberately ignores resolved_at, which is the very thing that blocked the
+ * original write.
+ *
+ * WHAT IT DOES NOT DO.  It never touches vendor_status. A trip the vendor already accepted stays
+ * Reconfirmed — the vendor accepted this correction, so applying its number is the fix, not a reason
+ * to reopen the trip. It never writes a system column (total_trip_km, adhoc_amount) and never
+ * resurfaces a trip to the vendor.
+ *
+ * JOIN.  trip_id first, then row_id. The fallback is not theoretical: one live dispute row carries the
+ * row_id (with its _R suffix) in the trip_id column, so it matches no Trip_Level trip_id at all.
+ *
+ * USAGE.  repairMissedResolutions()      -> DRY RUN, reports what it would change, writes nothing.
+ *         repairMissedResolutions(true)  -> applies.
+ * The menu item runs the dry run and then asks before applying.
+ * ============================================================================================== */
+function repairMissedResolutions(apply) {
+  var dl = _ctx(LOG_TABS.disputes, 'dispute_id');
+  var tl = _ctx(TABS.tripLevel, 'trip_id');
+  var val = function (row, c) { return dl.idx[c] !== undefined ? _s(dl.values[row][dl.idx[c]]) : ''; };
+  var tval = function (row, c) { return tl.idx[c] !== undefined ? _s(tl.values[row][tl.idx[c]]) : ''; };
+
+  /* resolved_* source column -> Trip_Level destination, LOCAL rows.
+     Deliberately mirrors applyResolutionsFromSheet — if that mapping changes, change it here too. */
+  var MAP_LOCAL = {
+    resolved_km:                'total_trip_km_resolved',
+    resolved_amount:            'adhoc_amount_resolved',
+    resolved_billing_type:      'billing_type_resolved',
+    resolved_challan_type:      'challan_type_final',
+    resolved_aggregate_vehicle: 'replaced_default_vehicle_final',
+    resolved_contract_id:       'contract_id'
+  };
+  /* Zonal: no KM slab and no vehicle level, so resolved_km / resolved_aggregate_vehicle are ignored
+     exactly as the appliers ignore them. Same rule, restated rather than shared, so a future change
+     to one scope cannot silently move the other. */
+  var MAP_ZONAL = {
+    resolved_amount:        'adhoc_amount_resolved',
+    resolved_zonal_amount:  'zonal_rfq_amount_final',
+    resolved_billing_type:  'billing_type_resolved',
+    resolved_challan_type:  'challan_type_final',
+    resolved_rfq_id:        'rfq_id'
+  };
+
+  var scanned = 0, repaired = 0, alreadyOk = 0, noTripRow = 0, noValues = 0, missingCol = {};
+  var writes = 0, lines = [], kmDelta = 0, byOracle = {};
+
+  for (var i = dl.headerRow + 1; i < dl.values.length; i++) {
+    var did = val(i, 'dispute_id'); if (!did) continue;
+    if (_low(val(i, 'dispute_status')) !== 'resolved') continue;
+    scanned++;
+
+    var tripId = val(i, 'trip_id'), rowId = val(i, 'row_id');
+    var tr = _findRowIndex(tl, 'trip_id', tripId);
+    var via = 'trip_id';
+    if (tr < 0 && rowId) { tr = _findRowIndex(tl, 'row_id', rowId); via = 'row_id'; }
+    if (tr < 0 && tripId) { tr = _findRowIndex(tl, 'row_id', tripId); via = 'row_id(from trip_id)'; }
+    if (tr < 0) {
+      noTripRow++;
+      lines.push('NO TRIP ROW  ' + did + '  trip_id=' + tripId + '  row_id=' + rowId);
+      continue;
+    }
+
+    var isZonal = _low(tval(tr, 'route_scope') || 'Local') === 'zonal';
+    var map = isZonal ? MAP_ZONAL : MAP_LOCAL;
+    var changed = [], had = 0;
+
+    Object.keys(map).forEach(function (src) {
+      var v = val(i, src); if (v === '') return;
+      had++;
+      var dest = map[src];
+      if (tl.idx[dest] === undefined) { missingCol[dest] = (missingCol[dest] || 0) + 1; return; }
+      var cur = tval(tr, dest);
+      if (_sameCell(cur, v)) return;      // same strict rule as the applier — see _sameCell
+      if (src === 'resolved_km') {
+        kmDelta += (_num(v) - _num(tval(tr, 'total_trip_km')));
+        var orc = tval(tr, 'transporter_oracle_id');
+        byOracle[orc] = (byOracle[orc] || 0) + 1;
+      }
+      changed.push(dest + ': ' + (cur === '' ? '<blank>' : cur) + ' -> ' + v);
+      if (apply) { _setCell(tl, tr, dest, v); writes++; }
+    });
+
+    if (!had) { noValues++; continue; }
+    if (!changed.length) { alreadyOk++; continue; }
+    repaired++;
+    lines.push((apply ? 'FIXED  ' : 'WOULD FIX  ') + did + '  (' + (isZonal ? 'zonal' : 'local')
+      + ', matched on ' + via + ', trip ' + tval(tr, 'trip_id') + ', vendor_status '
+      + tval(tr, 'vendor_status') + ')  ' + changed.join(' | '));
+  }
+
+  var head = (apply ? 'REPAIR APPLIED' : 'REPAIR DRY RUN — nothing written')
+    + '\n  Resolved disputes scanned : ' + scanned
+    + '\n  ' + (apply ? 'Rows repaired           : ' : 'Rows that would change  : ') + repaired
+    + '\n  Cells written           : ' + writes
+    + '\n  Already correct         : ' + alreadyOk
+    + '\n  Resolved but no values  : ' + noValues
+    + '\n  No Trip_Level row       : ' + noTripRow
+    + '\n  KM delta vs system      : ' + (Math.round(kmDelta * 1000) / 1000)
+    + '\n  Vendors affected        : ' + (Object.keys(byOracle).join(', ') || '—');
+  Object.keys(missingCol).forEach(function (c) {
+    head += '\n  MISSING COLUMN "' + c + '" on Trip_Level — ' + missingCol[c]
+         + ' value(s) could not be written. Run "1 · Create / verify tabs" first.';
+  });
+
+  var msg = head + (lines.length ? ('\n\n' + lines.join('\n')) : '');
+  Logger.log(msg);
+  return msg;
+}
+
+/** Menu: dry run, show it, then ask before applying. */
+function repairMissedResolutionsFromMenu() {
+  var ui = SpreadsheetApp.getUi();
+  var dry = repairMissedResolutions(false);
+  var head = dry.split('\n\n')[0];
+  var r = ui.alert('Repair missed resolutions — DRY RUN', head
+    + '\n\n(Full detail is in Extensions > Apps Script > Executions.)\n\nApply these changes now?',
+    ui.ButtonSet.YES_NO);
+  if (r !== ui.Button.YES) { ui.alert('Nothing applied.'); return; }
+  var done = repairMissedResolutions(true);
+  var s = (typeof syncToUpstash === 'function') ? syncToUpstash() : '(sync skipped)';
+  ui.alert(done.split('\n\n')[0] + '\n\n' + s);
+}

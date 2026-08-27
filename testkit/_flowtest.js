@@ -3,7 +3,8 @@
    it writes, so the answer is evidence rather than assertion. */
 const fs=require('fs');
 const TL_HDR=['trip_id','route_scope','rfq_id','billing_type_system','billing_type_final','billing_type_resolved',
-  'total_trip_km','adhoc_amount','zonal_rfq_amount','zonal_rfq_amount_final','challan_type','challan_type_final',
+  'total_trip_km','adhoc_amount','total_trip_km_resolved','adhoc_amount_resolved',
+  'zonal_rfq_amount','zonal_rfq_amount_final','challan_type','challan_type_final',
   'replaced_default_vehicle_final','contract_id','vendor_status','row_id','transporter_oracle_id',
   'sent_to_vendor_timestamp','dispute_window_end'];
 const DL_HDR=['dispute_id','trip_id','dispute_status','resolved_at','reconfirm_status','resolved_billing_type',
@@ -75,15 +76,23 @@ console.log('\n  '+out);
 const by=t=>writes.filter(w=>w.trip===t).reduce((o,w)=>(o[w.col]=w.v,o),{});
 const a=by('TR-ZT-0001'), b=by('TR-ZT-0002'), c=by('TR-L-1');
 ck(a.billing_type_resolved==='Adhoc','DSP-1 flipped the zonal trip via billing_type_resolved');
-ck(String(a.adhoc_amount)==='6100','DSP-1 set the adhoc amount that will now bill');
+/* 2026-08-27: a resolution writes adhoc_amount_RESOLVED / total_trip_km_RESOLVED, never the system
+   columns. See the note in Actions.gs — writing over total_trip_km destroyed the original and lost
+   166 live corrections. The classifier reads resolved-then-system, so the money is unchanged. */
+ck(String(a.adhoc_amount_resolved)==='6100','DSP-1 set the adhoc amount that will now bill');
+ck(a.adhoc_amount===undefined,'DSP-1 never wrote the SYSTEM adhoc_amount column');
 ck(a.billing_type_final===undefined,"DSP-1 never touched billing_type_final — that column stays ground's");
 ck(a.vendor_status==='Reconfirm','DSP-1 re-surfaced the trip to the vendor');
 ck(b.challan_type_final==='Forward Only','DSP-2 lifted the RTO on the zonal trip');
-ck(c.challan_type_final==='Forward Only'&&String(c.total_trip_km)==='180','DSP-3 lifted the RTO and set the local KM');
-ck(!writes.some(w=>w.trip==='TR-ZT-0001'&&w.col==='total_trip_km'),'no KM was written to a zonal trip');
-ck(writes.every(w=>['billing_type_resolved','adhoc_amount','challan_type_final','total_trip_km',
-  'zonal_rfq_amount_final','rfq_id','contract_id','billing_type_final','replaced_default_vehicle_final',
-  'vendor_status'].indexOf(w.col)>=0),'the script writes only the columns the resolution contract names');
+ck(c.challan_type_final==='Forward Only'&&String(c.total_trip_km_resolved)==='180','DSP-3 lifted the RTO and set the local KM');
+ck(c.total_trip_km===undefined,'DSP-3 never wrote the SYSTEM total_trip_km column');
+ck(!writes.some(w=>w.trip==='TR-ZT-0001'&&/^total_trip_km/.test(w.col)),'no KM was written to a zonal trip');
+ck(!writes.some(w=>w.col==='total_trip_km'||w.col==='adhoc_amount'),
+   'and NO system column is written by a resolution, on any trip — the original stays auditable');
+ck(writes.every(w=>['billing_type_resolved','adhoc_amount_resolved','challan_type_final',
+  'total_trip_km_resolved','zonal_rfq_amount_final','rfq_id','contract_id','billing_type_final',
+  'replaced_default_vehicle_final','vendor_status'].indexOf(w.col)>=0),
+  'the script writes only the columns the resolution contract names');
 
 /* the Open dispute must be untouched, and re-running must not double-apply */
 const before=writes.length;

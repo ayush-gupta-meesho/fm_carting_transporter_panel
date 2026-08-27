@@ -11,6 +11,8 @@ const fs=require('fs');
 const TL_HDR=['trip_id','row_id','transporter_oracle_id','route_scope','rfq_id','contract_id','vehicle_number',
   'vendor_status','billing_type_system','billing_type_final','billing_type_resolved',
   'replaced_default_vehicle_system','replaced_default_vehicle_final','total_trip_km','adhoc_amount',
+  // added 2026-08-27: a resolution now writes HERE, never over the system columns above
+  'total_trip_km_resolved','adhoc_amount_resolved',
   'zonal_rfq_amount','zonal_rfq_amount_final','challan_type','challan_type_final','km_accumulated_flag',
   'sent_to_vendor_flag','dispute_window_end'];
 const DL_HDR=['dispute_id','row_id','trip_id','dispute_status','reconfirm_status','resolved_at','resolved_by',
@@ -70,9 +72,16 @@ reset([{trip_id:'T-L1',row_id:'R1',transporter_oracle_id:'ORC-1',contract_id:'RJ
         billing_type_system:'Regular',total_trip_km:0,challan_type:'Forward Only',vendor_status:'Disputed'}],
       [{dispute_id:'DSP-1',trip_id:'T-L1',dispute_status:'Open'}]);
 let out=_applyResolvedRows(csv(['  Dispute_ID ','  Resolved_KM  '],[['DSP-1','180']]));
-console.log('  messy header -> '+out+'   total_trip_km now '+tcell('T-L1','total_trip_km'));
-ck(String(tcell('T-L1','total_trip_km'))==='180',
+console.log('  messy header -> '+out+'   total_trip_km_resolved now '+tcell('T-L1','total_trip_km_resolved')
+  +'  (system total_trip_km still '+tcell('T-L1','total_trip_km')+')');
+ck(String(tcell('T-L1','total_trip_km_resolved'))==='180',
    'a header with stray spaces and mixed case still matches (Excel round-trips do this)');
+/* 2026-08-27: the destination changed. resolved_km lands in total_trip_km_resolved and the SYSTEM
+   column is left alone, so the original is auditable and a re-push of Trip_Level cannot revert the
+   correction. Every assertion below that used to read total_trip_km now reads both. */
+ck(String(tcell('T-L1','total_trip_km'))==='0','and the system total_trip_km is NOT overwritten');
+ck(P('T-L1').km===180,'the classifier reads the resolved value, so the trip is 180 km');
+ck(P('T-L1').kmWas===0,'and kmWas exposes the 0 it replaced, for the panel to show');
 
 /* ==================================================================================================
  * 2. an unmatched dispute_id is reported, never invented
@@ -85,7 +94,8 @@ out=_applyResolvedRows(csv(['dispute_id','resolved_km'],[['DSP-1','180'],['DSP-N
 console.log('  '+out.split('\n')[0]);
 ck(/applied 1, unmatched 1/.test(out),'one applied, one unmatched, the blank id silently skipped — '+out.split('\n')[0]);
 ck(/no dispute DSP-NOPE/.test(out),'and the unmatched id is NAMED in the return message');
-ck(String(tcell('T-L1','total_trip_km'))==='180','the matched row applied');
+ck(String(tcell('T-L1','total_trip_km_resolved'))==='180','the matched row applied');
+ck(String(tcell('T-L1','total_trip_km'))==='100','and the system column still reads its original 100');
 
 /* ==================================================================================================
  * 3. blank means "leave alone" — the §G16 promise
@@ -101,7 +111,10 @@ console.log('  km='+tcell('T-L2','total_trip_km')+' amt='+tcell('T-L2','adhoc_am
   +' billing_resolved='+JSON.stringify(tcell('T-L2','billing_type_resolved'))
   +' status='+tcell('T-L2','vendor_status'));
 ck(String(tcell('T-L2','total_trip_km'))==='120','a blank resolved_km leaves total_trip_km alone');
+ck(tcell('T-L2','total_trip_km_resolved')==='','and writes nothing into total_trip_km_resolved either');
 ck(String(tcell('T-L2','adhoc_amount'))==='4944','a blank resolved_amount leaves adhoc_amount alone');
+ck(tcell('T-L2','adhoc_amount_resolved')==='','and adhoc_amount_resolved stays blank');
+ck(P('T-L2').kmWas===null&&P('T-L2').amtWas===null,'and nothing is flagged as revised to the vendor');
 ck(tcell('T-L2','billing_type_resolved')==='','a blank resolved_billing_type writes nothing at all');
 ck(dcell('DSP-2','resolution_note')==='upheld in part','but the note IS recorded');
 /* the trip still has to re-surface, even when nothing about the money changed — the vendor is owed
@@ -153,7 +166,8 @@ console.log('  proper flip -> billing_resolved='+tcell('T-Z3','billing_type_reso
 ck(!/REFUSED/.test(out),'the same flip WITH resolved_amount is accepted');
 ck(tcell('T-Z3','billing_type_resolved')==='Adhoc','billing_type_resolved is written (never billing_type_final)');
 ck(tcell('T-Z3','billing_type_final')==='','ground\'s column is untouched — two authorities, two columns');
-ck(String(tcell('T-Z3','adhoc_amount'))==='6100','the adhoc amount is populated');
+ck(String(tcell('T-Z3','adhoc_amount_resolved'))==='6100','the adhoc amount is populated');
+ck(tcell('T-Z3','adhoc_amount')==='','into adhoc_amount_RESOLVED — the system column is left blank');
 ck(P('T-Z3').billing==='Adhoc'&&P('T-Z3').payable===6100,'and the trip now bills ₹6,100 as Adhoc');
 
 /* ==================================================================================================
@@ -235,6 +249,8 @@ SCENARIOS.forEach(function(sc){
   const viaSheet=snapshotTL(), shPay=P(sc.tl.trip_id);
   console.log('  '+sc.name.padEnd(42)+(viaCsv===viaSheet?'identical':'*** DIFFERENT ***')
     +'   payable ₹'+csvPay.payable+' / ₹'+shPay.payable);
+  if(viaCsv!==viaSheet){ const a=viaCsv.split('|')[0].split(','),b=viaSheet.split('|')[0].split(',');
+    TL_HDR.forEach((h,i)=>{ if(a[i]!==b[i]) console.log('      DIFF '+h+': csv='+JSON.stringify(a[i])+' sheet='+JSON.stringify(b[i])); }); }
   ck(viaCsv===viaSheet,'"'+sc.name+'" lands identically through both doors');
   ck(csvPay.payable===shPay.payable,'  and pays the same either way (₹'+csvPay.payable+')');
   ck(csvPay.billing===shPay.billing&&csvPay.rto===shPay.rto&&csvPay.kmToSlab===shPay.kmToSlab,
@@ -242,31 +258,95 @@ SCENARIOS.forEach(function(sc){
 });
 
 /* ==================================================================================================
- * 7. idempotency — the in-sheet applier must never apply a row twice
+ * 7. re-running the in-sheet applier — the contract CHANGED on 2026-08-27, read this
+ *
+ * It used to be: `if (val(i,'resolved_at')) continue;` — a stamped row was skipped forever, and the
+ * OLD version of this section asserted that as a guarantee ("skipped forever, safe on a timer"). That
+ * assertion was encoding the bug. Because resolved_at was stamped BEFORE any resolved_* value was
+ * read, ops marking a dispute Resolved and typing the number a minute later lost the number for good:
+ * 166 live rows, 1,974.216 km, invisible because the trip still flipped to Reconfirm and the vendor
+ * still saw the figure in the View-Dispute dialog.
+ *
+ * The contract now: resolved_at gates the ONE-TIME side effects only (flip to Reconfirm, status-view
+ * upsert — those notify the vendor). The value writes run every pass and are idempotent, compared
+ * cell by cell. So the function is self-healing without ever reopening an accepted trip.
  * ================================================================================================= */
-console.log('\n── 7. idempotency of the in-sheet applier ──');
+console.log('\n── 7. re-running the applier: self-healing, but never re-notifying ──');
 reset([{trip_id:'I1',row_id:'I1',transporter_oracle_id:'ORC-1',contract_id:'RJK7-X',
         billing_type_system:'Regular',total_trip_km:100,challan_type:'Forward Only',vendor_status:'Disputed'}],
       [{dispute_id:'DSP-I1',trip_id:'I1',dispute_status:'Resolved',resolved_km:'180'}]);
 applyResolutionsFromSheet();
-const afterFirst=String(tcell('I1','total_trip_km')), stamp=dcell('DSP-I1','resolved_at');
-/* the vendor now re-disputes, ground re-runs the timer, someone edits the sheet — the row must be inert */
-TL[1][TL[0].indexOf('total_trip_km')]=999;               // pretend something else moved it
-applyResolutionsFromSheet();
-console.log('  after 1st run km='+afterFirst+' resolved_at='+stamp
-  +'   after 2nd run km='+tcell('I1','total_trip_km'));
-ck(afterFirst==='180','the first run applies the resolution');
-ck(String(stamp).length>0,'and stamps resolved_at as the applied marker');
-ck(String(tcell('I1','total_trip_km'))==='999',
-   'the second run does NOT re-apply — a stamped row is skipped forever (safe on a timer)');
-/* and an Open row is never applied at all */
+ck(String(tcell('I1','total_trip_km_resolved'))==='180','the first run applies the resolution');
+ck(String(dcell('DSP-I1','resolved_at')).length>0,'and stamps resolved_at');
+ck(tcell('I1','vendor_status')==='Reconfirm','and re-surfaces the trip to the vendor');
+ck(statusUpserts.length===1,'with exactly one status-view upsert');
+
+/* the vendor accepts. a timer fires again. nothing may move. */
+TL[1][TL[0].indexOf('vendor_status')]='Reconfirmed';
+tlWrites=[]; statusUpserts=[];
+let out7=applyResolutionsFromSheet();
+console.log('  re-run with nothing changed -> '+out7.split('\n')[0]+'   TL writes: '+tlWrites.length);
+ck(tlWrites.length===0,'a re-run with nothing changed writes NOT ONE Trip_Level cell (true idempotency)');
+ck(tcell('I1','vendor_status')==='Reconfirmed',
+   'and an accepted trip is NOT reopened — resolved_at still gates the vendor-facing flip');
+ck(statusUpserts.length===0,'no second status-view upsert, so the vendor is not notified twice');
+
+/* THE REGRESSION THIS EXISTS FOR: ops fills the number AFTER the row was already stamped. */
+reset([{trip_id:'I3',row_id:'I3',transporter_oracle_id:'ORC-1',contract_id:'RJK7-X',
+        billing_type_system:'Regular',total_trip_km:167.074,challan_type:'Forward Only',vendor_status:'Disputed'}],
+      [{dispute_id:'DSP-I3',trip_id:'I3',dispute_status:'Resolved',resolution_note:'We have reviewed and resolved.'}]);
+let outA=applyResolutionsFromSheet();                       // fires on the still-empty row
+ck(tcell('I3','total_trip_km_resolved')==='','pass 1: note only, so nothing is written yet');
+ck(String(dcell('DSP-I3','resolved_at')).length>0,'pass 1: resolved_at IS stamped (the vendor was told)');
+ck(tcell('I3','vendor_status')==='Reconfirm','pass 1: and the trip re-surfaced');
+DL[1][DL[0].indexOf('resolved_km')]='183';                  // ops types the number a minute later
+TL[1][TL[0].indexOf('vendor_status')]='Reconfirmed';        // and the vendor has already accepted
+tlWrites=[]; statusUpserts=[];
+let outB=applyResolutionsFromSheet();
+console.log('  late-filled resolved_km -> '+outB.replace(/\n/g,'\n    '));
+ck(String(tcell('I3','total_trip_km_resolved'))==='183',
+   'pass 2: the LATE-FILLED resolved_km lands anyway — this is the 166-row bug, fixed');
+ck(String(tcell('I3','total_trip_km'))==='167.074','pass 2: and the system KM is still untouched');
+ck(P('I3').km===183&&P('I3').kmWas===167.074,'pass 2: the classifier now bills 183 km and shows what it replaced');
+ck(/RECONCILED/.test(outB),'pass 2: and it is REPORTED, not silent — '+(outB.match(/RECONCILED[^\n]{0,60}/)||[''])[0]);
+ck(tcell('I3','vendor_status')==='Reconfirmed','pass 2: the accepted trip is still not reopened');
+ck(statusUpserts.length===0,'pass 2: and the vendor is not re-notified');
+
+/* an Open row is still never applied at all — Resolved remains the only trigger */
 reset([{trip_id:'I2',row_id:'I2',transporter_oracle_id:'ORC-1',contract_id:'RJK7-X',
         billing_type_system:'Regular',total_trip_km:100,vendor_status:'Disputed'}],
       [{dispute_id:'DSP-I2',trip_id:'I2',dispute_status:'Open',resolved_km:'180'}]);
 applyResolutionsFromSheet();
-ck(String(tcell('I2','total_trip_km'))==='100',
+ck(tcell('I2','total_trip_km_resolved')==='',
    'an Open dispute with resolved_km already filled is NOT applied — Resolved is the trigger');
+ck(String(tcell('I2','total_trip_km'))==='100','the system column is untouched too');
 ck(tcell('I2','vendor_status')==='Disputed','and the trip stays Disputed');
+
+/* the row_id fallback — one LIVE dispute row carries the row_id in its trip_id column */
+reset([{trip_id:'TR-59335170-3079',row_id:'TR-59335170-3079_R',transporter_oracle_id:'ORC-1',
+        contract_id:'RJK8-X',billing_type_system:'Regular',total_trip_km:167.074,
+        challan_type:'Forward Only',vendor_status:'Disputed'}],
+      [{dispute_id:'DSP-RID',trip_id:'TR-59335170-3079_R',row_id:'TR-59335170-3079_R',
+        dispute_status:'Resolved',resolved_km:'183'}]);
+let outR=applyResolutionsFromSheet();
+console.log('  trip_id holds the row_id -> resolved km '+tcell('TR-59335170-3079','total_trip_km_resolved'));
+ck(String(tcell('TR-59335170-3079','total_trip_km_resolved'))==='183',
+   'a dispute whose trip_id actually holds the row_id still finds its trip (live data does this)');
+ck(!/NO TRIP ROW/.test(outR),'and it is not reported as unmatched');
+/* but a genuinely unmatchable row IS reported, never silently dropped */
+reset([{trip_id:'X1',row_id:'X1',transporter_oracle_id:'ORC-1',contract_id:'RJK7-X',
+        billing_type_system:'Regular',total_trip_km:100,vendor_status:'Disputed'}],
+      [{dispute_id:'DSP-GONE',trip_id:'NOPE',row_id:'NOPE',dispute_status:'Resolved',resolved_km:'180'}]);
+let outG=applyResolutionsFromSheet();
+ck(/NO TRIP ROW for DSP-GONE/.test(outG),'a dispute matching no trip at all is NAMED in the return message');
+
+/* an empty Resolved row — no values AND no note — is called out as a probable half-finished edit */
+reset([{trip_id:'I4',row_id:'I4',transporter_oracle_id:'ORC-1',contract_id:'RJK7-X',
+        billing_type_system:'Regular',total_trip_km:100,vendor_status:'Disputed'}],
+      [{dispute_id:'DSP-I4',trip_id:'I4',dispute_status:'Resolved'}]);
+let outE=applyResolutionsFromSheet();
+ck(/EMPTY DSP-I4/.test(outE),'a Resolved row with no values and no note is flagged as probably half-finished');
+ck(tcell('I4','vendor_status')==='Reconfirm','but still re-surfaces — a rejection is a real outcome');
 
 console.log('\n── results ──');
 notes.forEach(x=>console.log(x));

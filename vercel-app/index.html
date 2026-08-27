@@ -171,6 +171,11 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 .st-pending{color:var(--amber);font-weight:700;font-size:11px;white-space:nowrap;}
 .st-confirmed{color:var(--green);font-weight:700;font-size:11px;white-space:nowrap;}
 .st-win{font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;}
+/* ADMIN ONLY. A trip that has not been transferred to the vendor still reads vendor_status
+   'Pending', so without this chip it is indistinguishable from one the vendor can actually see and
+   act on. Never rendered on a vendor payload — those are filtered to sent rows upstream. */
+.st-unsent{display:inline-block;font-size:10px;font-weight:700;color:#8A5A00;background:#FFF4DB;
+  border:1px solid #F0D79A;border-radius:4px;padding:1px 5px;margin-top:3px;white-space:nowrap;}
 
 /* action buttons */
 .btn{font-family:'Poppins';border:none;border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer;}
@@ -181,6 +186,8 @@ body{font-family:'Poppins',sans-serif;background:var(--bg);color:var(--ink);font
 
 .km-cell b{font-size:13px;color:var(--navy);}
 .km-cell .km-sub{font-size:10px;color:var(--muted);}
+.km-revised{font-size:9.5px;font-weight:600;color:#1E7A3D;background:#E7F6EC;border:1px solid #BFE6CC;
+  border-radius:4px;padding:1px 4px;margin-top:2px;display:inline-block;white-space:nowrap;}
 .adhoc-amt{font-size:13px;font-weight:700;color:var(--amber);white-space:nowrap;}
 
 .route-nodes{display:flex;align-items:center;gap:4px;flex-wrap:nowrap;white-space:nowrap;}
@@ -725,7 +732,14 @@ function renderContracts(){
     return true;
   });
 
-  if(IS_ADMIN){ var _s=(ADMIN_DATA&&ADMIN_DATA.summary)||{}; document.getElementById('asCount').textContent=(_s.over||0)+' over-utilised · '+(_s.under||0)+' under-utilised · '+(_s.onTrack||0)+' on track'; }
+  if(IS_ADMIN){ var _s=(ADMIN_DATA&&ADMIN_DATA.summary)||{};
+    /* The untransferred backlog is the number an admin actually acts on: it is how many trips are
+       sitting in the sheet that no vendor can see yet. Counted from the payload rather than carried in
+       summary{} so it stays correct even against a snapshot built before this change. */
+    var _unsent=allTrips().filter(function(t){return t.sent===false;}).length;
+    document.getElementById('asCount').textContent=(_s.over||0)+' over-utilised · '+(_s.under||0)
+      +' under-utilised · '+(_s.onTrack||0)+' on track'
+      +(_unsent?('  ·  '+_unsent+' trip'+(_unsent===1?'':'s')+' NOT yet sent to vendor'):''); }
   else document.getElementById('asCount').textContent='You have '+pendingCount()+' trips pending confirmation';
 
   var el=document.getElementById('contractList');
@@ -1028,14 +1042,29 @@ function renderMISInto(panelId, cid){
     // the RFQ is spelled out under the amount ONLY where the reference column is hidden, so the two
     // never repeat each other on the same row
     else if((t.scope||'Local')==='Zonal' && t.billing==='Regular') kmCell='<span class="adhoc-amt" style="color:#0E7C7B;">'+money(t.zamt||0)+'</span><div class="st-win rfq-sub"'+(t.rfq?' title="RFQ '+t.rfq+'"':'')+'>'+(_showRef?'zonal RFQ':(t.rfq?('RFQ '+t.rfq):'zonal RFQ · not set'))+'</div>';
-    else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span><div class="st-win"'+(t.rfq?' title="RFQ '+t.rfq+'"':'')+'>'+((!_showRef&&t.rfq)?('adhoc · RFQ '+t.rfq):'adhoc amount')+'</div>';
-    else kmCell='<span class="km-cell"><b>'+(t.km==null?'—':t.km)+'</b> km</span>';
+    else if(t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span>'
+      +(t.amtWas!=null?('<div class="km-revised" title="Revised from '+money(t.amtWas)+' after your dispute was resolved">revised from '+money(t.amtWas)+'</div>'):'')
+      +'<div class="st-win"'+(t.rfq?' title="RFQ '+t.rfq+'"':'')+'>'+((!_showRef&&t.rfq)?('adhoc · RFQ '+t.rfq):'adhoc amount')+'</div>';
+    /* kmWas is set only when a resolution changed the KM. Showing it on the ROW matters: the
+       View-dispute dialog is the only other place the resolved figure appears, and a vendor reading a
+       settled trip needs to see that the correction landed without opening anything. */
+    else kmCell='<span class="km-cell"><b>'+(t.km==null?'—':t.km)+'</b> km'
+      +(t.kmWas!=null?('<div class="km-revised" title="Revised from '+t.kmWas+' km after your dispute was resolved">revised from '+t.kmWas+' km</div>'):'')
+      +'</span>';
     var statusCell;
     if(t.status==='confirmed') statusCell='<div class="st-confirmed">✓ Confirmed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'');
     else if(t.status==='disputed') statusCell='<div style="color:var(--violet);font-weight:700;">⚑ Disputed</div>'+(t._pending?'<div class="st-win">applying on next sync…</div>':'<div class="st-win">under review</div>');
     else if(t.status==='reconfirm') statusCell='<div style="color:var(--amber);font-weight:700;">↻ Pending Reconfirmation</div><div class="st-win">review the correction</div>';
     else statusCell='<div class="st-pending">Pending Confirmation</div><div class="st-win">Open till '+(t.win||'—')+'</div>';
-    if((t.status==='disputed'||t.status==='reconfirm') && t.disp) statusCell+='<div class="st-win" style="margin-top:3px;"><a href="#" onclick="viewDispute(\''+t.cid+'\',\''+t.id+'\');return false;" style="color:var(--blue);font-weight:600;text-decoration:underline;">View dispute</a></div>';
+    /* Shown whenever the trip HAS a dispute, not only while it is still open. It used to be gated on
+       status==='disputed'||'reconfirm', so the moment a vendor accepted a resolution the link — and
+       with it the only record of what was resolved and to what value — disappeared from the panel.
+       That is what made an accepted correction look like it had reverted. (2026-08-27) */
+    if(t.disp) statusCell+='<div class="st-win" style="margin-top:3px;"><a href="#" onclick="viewDispute(\''+t.cid+'\',\''+t.id+'\');return false;" style="color:var(--blue);font-weight:600;text-decoration:underline;">'+((t.status==='confirmed')?'View resolution':'View dispute')+'</a></div>';
+    /* t.sent is false only on the ADMIN payload (built with allTrips), where untransferred trips are
+       included on purpose. Guard on `=== false` so an older snapshot without the field — where sent is
+       undefined — renders exactly as before instead of flagging every trip as unsent. */
+    if(IS_ADMIN && t.sent===false) statusCell+='<div class="st-unsent" title="sent_to_vendor_flag is not Yes — the vendor cannot see or act on this trip yet">Not yet sent to vendor</div>';
     var checkCell = _ro ? '' : (t.status==='pending'
       ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
       : '<td></td>');

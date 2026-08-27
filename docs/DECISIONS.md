@@ -639,3 +639,147 @@ rather than blind spots.
 
 **One file changed in production code:** `apps-script/Billing.gs`, one line. Everything else in this
 sweep is tests and documentation.
+
+---
+
+## Admin view: untransferred trips made visible — 2026-08-19
+
+Ayush: *"if a trip is not sent to vendor, will they aggregate in admin view? Currently I cannot see them —
+wasn't it this feature?"*
+
+It was, and it worked. `_buildAdminPayload()` passes `allTrips: true`, which bypasses the
+`sent_to_vendor_flag` gate at `Code.gs:405`, and the untransferred trips were in the payload all along —
+measured, 32 trips in the admin payload against 30 in the vendor one.
+
+**What was missing was the signal, not the data.** `sent_to_vendor_flag` was read *only* as a filter and
+never reached the trip object, so an untransferred trip rendered as `status: "pending"` — indistinguishable
+from a trip the vendor could actually see and act on.
+
+Fixed by carrying `sent: _yes(t.sent_to_vendor_flag)` into all **three** trip mappers (local, zonal,
+Other-Adhoc bucket), then badging it admin-side with an amber "Not yet sent to vendor" chip and a count on
+the admin header.
+
+The chip guard is `t.sent === false`, not `!t.sent`: against an `admin:all` built before this change the
+field is `undefined`, and `!undefined` would have flagged every trip in the panel. The strict test degrades
+to showing nothing rather than showing everything.
+
+Harness: **`_adminunsenttest.js`, 16 checks in real Chromium** — including the reverse direction, that no
+chip or backlog line can reach a vendor. Suite now 13 harnesses / 690 assertions.
+
+**Two gates this does not clear**, both recorded in `FIX_ADMIN_UNSENT_TRIPS_2026-08-19.md`: `admin:all` is
+only written when `Access_Control` holds an active `role = admin` row (`Sync.gs:82`), and the admin oracle
+list is built from **Contract_Info** while vendor payloads are built from **Access_Control** — so a trip
+whose oracle has no contract row is invisible in admin regardless.
+
+**Plus a separate pre-existing finding:** `logoutFn()` calls `showLogin()` without `location.reload()`, so
+14 trip rows from the previous session stay in the DOM after logout (hidden, not on screen). Left
+unchanged — out of scope and it touches auth — but the harness now pins the current behaviour so a fix
+shows up as a failure rather than passing quietly.
+
+---
+
+## 2026-08-21 — Mumbai contract master, third check on `Contract_Info` + `Local`
+
+Sheet last modified 2026-08-21 09:30 IST. Ran the real `Billing.gs` engine over both tabs for all 11
+oracles, plus independent reconciliation / plate / `day1_order` / `active_days` / rate-card checks.
+Snapshot and scripts frozen in `testkit/mumbai_2026-08-21/`; findings in
+`docs/VALIDATION_MUMBAI_CONTRACT_INFO_LOCAL_2026-08-21.md`.
+
+**Two open items, down from seven on 19 Aug.**
+
+1. **`fixed_monthly_value(15days)` header — still unfixed, still blocks all 11 vendors.**
+   `_readTab()` is header-name based, so the parenthetical makes the engine read ₹0 for every contract.
+   Verified both ways: with the header corrected all 11 gates clear for all 11 vendors; with the live
+   header, `Σ monthly_rate = Contract_Info.fixed_monthly_value` BLOCKs 11 of 11.
+   *This is the third time this has been raised (18, 19, 21 Aug).*
+
+2. **Drivetech `MUM8-20682-20260817-31` states three different day counts.** Window 17–19 Aug is 3 days
+   inclusive; `active_days` says 2; the money (67 km / ₹1,583) is `2000 × 1/30` and `47500 × 1/30`, i.e.
+   **1 day**. The other three part-period rows in the file are all consistent on the inclusive reading
+   (12/12, 12/12, 13/13), which is what makes 2 wrong. If 3 days is right, Drivetech is short ₹3,167.
+   **Neither reconciliation gate can catch this** — `Contract_Info` and `Local` agree with each other at
+   ₹1,583; only the rate-card cross-check finds it. Recorded as an argument for adding a
+   rate-card gate to `Billing.gs` (see open items below).
+
+**Confirmed fixed since 19 Aug**: `MH04LY5943` moved off `MUM8-20517-20260817-31` onto the new
+`-20260819-31` contract (84 rows, 84 unique plates, no overlapping-window duplicate anywhere);
+Drivetech un-zeroed and set `Active`, clearing the one BLOCK from 19 Aug; Drivetech's `Local` row window
+now matches `Contract_Info`; `day1_order` reset to 1 on all three part-period contracts; zonal `rfq_id`s
+stripped of the U+2192 arrow and unified on one prefix; the schema is complete on both tabs with real
+date cells.
+
+**Convention settled, recorded here as the reference:** pro-rating is **`tier × active_days / 30`** — a
+30-day month, not 15/31. Zonal's `day_15_rate = monthly ÷ 2` is the same convention. This supersedes the
+11-Aug note that read ÷2 as 3.33% richer than the stated 15/31; the part-period rows added on 19–21 Aug
+settle it, 83 of 84 rows conforming.
+
+**Local ₹22,61,466 (84 vehicles / 110,434 km) + zonal ₹2,58,375 = ₹25,19,841** for 17–31 Aug. The
+in-sheet pivot is stale at `84 / 110,367 km / ₹22,59,883` — exactly Drivetech's 67 km and ₹1,583 behind.
+
+**Gate gap re-confirmed and now twice-motivated:** `runGates` has no rate-card check. Both a same-vendor
+cross-contract plate duplicate (found 19 Aug) and a mis-prorated part-period row (found 21 Aug) pass all
+11 gates. A master-data gate that recomputes `monthly_rate` and `pegged_km_slab` from
+`tier × active_days / 30` and compares `active_days` to the inclusive date window would have caught
+today's finding without any trip data.
+
+---
+
+## 2026-08-27 — A resolution never writes a system column, and `resolved_at` no longer skips the row
+
+Found while investigating "a vendor accepts a resolved dispute and the row shows the original KM again".
+Full write-up: `docs/FIX_LOST_RESOLUTIONS_2026-08-27.md`.
+
+**166 of 166 resolved disputes on the live sheet had never reached `Trip_Level`.** 1,974.216 km, all
+Krushiv Enterprise (18838). ₹0 owed today — both contracts sit under slab either way — but the panel and
+the billing MIS were both quoting the uncorrected KM.
+
+### Three decisions
+
+**1. `resolved_km` and `resolved_amount` get their own destination columns.**
+`total_trip_km_resolved` and `adhoc_amount_resolved`, **appended at the END of the Trip_Level schema**
+(`setupSheet()` writes headers across `headers.length` columns, so a mid-list insert would relabel live
+columns and misalign every row). These were the only two resolvable fields written destructively into
+the system column; every other one already had a dedicated destination. Precedence in `_classifyTrip`
+is now `resolved > system` for both, tested with an **explicit blank check, never `||`** — a dispute
+resolved to 0 km is a real outcome and must not fall through to the system value.
+**Ground gets no KM column. There is no `total_trip_km_final` and there must not be one.**
+
+**2. `resolved_at` gates only the one-time vendor-facing side effects, never the value writes.**
+It used to be `if (val(i,'resolved_at')) continue;`, and it was stamped at the top of the loop before
+any `resolved_*` value was read. So *mark Resolved → timer fires → type the number* lost the number
+permanently. Now the flip to `Reconfirm` and the `Confirmation_Status_View` upsert stay gated (they
+notify the vendor, exactly once), while the writes reconcile on every pass, compared cell by cell.
+Self-healing, never reopens an accepted trip, and reports what it corrected.
+
+**Rule that follows: an idempotency marker must never be stamped before the work it guards.** Stamp
+after, or make the work value-comparing so the stamp is informational. This is the second time a
+write-order assumption has cost live data.
+
+**3. The panel must carry a correction on the row, not only inside a modal.**
+`kmWas` / `amtWas` on the payload drive a "revised from N" chip. And the View-dispute link is no longer
+gated on `disputed|reconfirm` — it was disappearing at the exact moment the vendor accepted, taking the
+only display of `resolved_km` with it. It now reads "View resolution" once settled.
+**Anything reachable only while a record is open is not a record.**
+
+### Lesson recorded: a test can encode a bug as a guarantee
+
+`_importtest.js` section 7 asserted *"a stamped row is skipped forever (safe on a timer)"* — a faithful
+description of the defect, written as a promise, passing for weeks. Rewritten to the new contract with
+the old sequence kept as an explicit non-vacuity probe. When a fix requires deleting an assertion, the
+assertion is the thing to read hardest.
+
+Also: `_importtest`'s both-doors parity check caught a first cut of the idempotent write helper that
+compared `_num()` on any value containing a digit — so `RJK7-X` and `RJK10-Y` both reduced to `0` and a
+`contract_id` correction was skipped as "already applied". `_sameCell()` compares numerically only when
+both sides *are* numbers.
+
+### New tool
+
+`menu 5a · Repair missed resolutions` (`repairMissedResolutions()`, **dry run by default**) — ignores
+`resolved_at`, writes any resolved value whose destination differs, never touches `vendor_status`, never
+writes a system column, never notifies, and names a missing column rather than silently no-op'ing.
+Joins `trip_id` then `row_id`, because one live dispute row carries the row_id in its `trip_id` column.
+
+### Suite
+
+13 harnesses / 690 assertions → **15 / 802**. New: `_kmresolvetest.js` (56), `_resolveduitest.js` (26).

@@ -1,0 +1,28 @@
+contract_id,vendor_oracle_id,vendor_name,cluster,vehicle_size,hours_slab,no_of_vehicles,total_km_slab,fixed_monthly_value,ex_km_rate,contract_start_date,contract_end_date,contract_status
+MUM10-19434-20260817-31,19434,Yah Yah Transcarrier Private Limited,Mumbai,10 FT,12hr,1,"1,500 km",35500,12,2026-08-17,2026-08-31,Active
+MUM7-19434-20260817-31,19434,Yah Yah Transcarrier Private Limited,Mumbai,7 FT,12hr,11,"15,500 km",254500,8,2026-08-17,2026-08-31,Active
+MUM8-19434-20260817-31,19434,Yah Yah Transcarrier Private Limited,Mumbai,8 FT,12hr,3,"4,000 km",77750,10,2026-08-17,2026-08-31,Active
+MUM7-19434-20260817-31-24H,19434,Yah Yah Transcarrier Private Limited,Mumbai,7 FT,24hr,4,6000,152000,8,2026-08-17,2026-08-31,Active
+MUM10-18764-20260817-31,18764,Buraq Transcarriers Private Limited,Mumbai,10 FT,12hr,6,"8,500 km",207500,12,2026-08-17,2026-08-31,Active
+MUM7-18764-20260817-31,18764,Buraq Transcarriers Private Limited,Mumbai,7 FT,12hr,1,"1,000 km",21500,8,2026-08-17,2026-08-31,Active
+MUM8-18764-20260817-31,18764,Buraq Transcarriers Private Limited,Mumbai,8 FT,12hr,10,"15,000 km",270000,10,2026-08-17,2026-08-31,Active
+MUM7-18764-20260820-31,18764,Buraq Transcarriers Private Limited,Mumbai,7 FT,12hr,1,"1,200 km",18800,8,2026-08-20,2026-08-31,Active
+MUM8-18764-20260820-31,18764,Buraq Transcarriers Private Limited,Mumbai,8 FT,12hr,1,800 km,19000,10,2026-08-20,2026-08-31,Active
+MUM14-20517-20260817-31,20517,Ajay Enterprise,Mumbai,14 FT,12hr,2,"2,000 km",67000,14,2026-08-17,2026-08-31,Active
+MUM7-20517-20260817-31,20517,Ajay Enterprise,Mumbai,7 FT,12hr,8,"9,000 km",176000,8,2026-08-17,2026-08-31,Active
+MUM8-20517-20260817-31,20517,Ajay Enterprise,Mumbai,8 FT,12hr,6,"8,000 km",155500,10,2026-08-17,2026-08-31,Active
+MUM8-20517-20260819-31,20517,Ajay Enterprise,Mumbai,8 FT,12hr,1,867 km,20583,10,2026-08-19,2026-08-31,Active
+MUM10-20426-20260817-31,20426,Ssk Roadlines Private Limited,Mumbai,10 FT,12hr,4,"5,500 km",136500,12,2026-08-17,2026-08-31,Active
+MUM14-20426-20260817-31,20426,Ssk Roadlines Private Limited,Mumbai,14 FT,12hr,3,"4,000 km",111500,14,2026-08-17,2026-08-31,Active
+MUM7-20426-20260817-31,20426,Ssk Roadlines Private Limited,Mumbai,7 FT,12hr,3,"4,500 km",70500,8,2026-08-17,2026-08-31,Active
+MUM14-20226-20260817-31,20226,Fedfox Logistics Pvt. Ltd.,Mumbai,14 FT,12hr,1,"1,000 km",33500,14,2026-08-17,2026-08-31,Active
+MUM7-20226-20260817-31,20226,Fedfox Logistics Pvt. Ltd.,Mumbai,7 FT,12hr,1,"1,000 km",21500,8,2026-08-17,2026-08-31,Active
+MUM8-20226-20260817-31,20226,Fedfox Logistics Pvt. Ltd.,Mumbai,8 FT,12hr,5,"7,000 km",131750,10,2026-08-17,2026-08-31,Active
+MUM7-20882-20260817-31,20882,Bharat Enterprises,Mumbai,7 FT,12hr,1,"1,500 km",23500,8,2026-08-17,2026-08-31,Active
+MUM8-20882-20260817-31,20882,Bharat Enterprises,Mumbai,8 FT,12hr,2,"3,000 km",54000,10,2026-08-17,2026-08-31,Active
+MUM8-19252-20260817-31,19252,Sk Transport,Mumbai,8 FT,12hr,2,"2,500 km",50750,10,2026-08-17,2026-08-31,Active
+MUM14-19252-20260817-31,19252,Sk Transport,Mumbai,14 FT,12hr,1,"1,500 km",39000,14,2026-08-17,2026-08-31,Active
+MUM7-18722-20260817-31,18722,Shree Sadguru Krupa Enterprises,Mumbai,7 FT,12hr,2,"2,500 km",45000,8,2026-08-17,2026-08-31,Active
+MUM7-20703-20260817-31,20703,Apex Business Solutions,Mumbai,7 FT,12hr,2,"2,000 km",43000,8,2026-08-17,2026-08-31,Active
+MUM8-19280-20260817-31,19280,Pune Logistics,Mumbai,8 FT,12hr,1,"1,000 km",23750,10,2026-08-17,2026-08-31,Active
+MUM8-20682-20260817-31,20682,Drivetech,Mumbai,8 FT,12hr,1,67km,1583,10,2026-08-17,2026-08-19,Active

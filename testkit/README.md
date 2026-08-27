@@ -1,7 +1,7 @@
 # Panel test kit — run this before every push
 
-Eleven harnesses, **658 assertions**, all driving the **real** `Code.gs` / `Actions.gs` / `Billing.gs` /
-`index.html` / `api/action.js`. No hand-written fixtures anywhere: every number is produced by the real
+Fifteen harnesses, **802 assertions**, all driving the **real** `Code.gs` / `Actions.gs` / `Billing.gs` /
+`index.html` / `api/data.js` / `api/action.js` / `lib/core.js`. No hand-written fixtures anywhere: every number is produced by the real
 code, and every expectation is either an independent re-derivation from `docs/ZONAL_LOCAL_SCHEMA.md` or a
 comparison against the raw CSV. If any two files drift apart, one of these names the drift.
 
@@ -22,6 +22,9 @@ node _rtotest.js        # the RTO resolution table
 node _resolvetest.js    # does an upheld resolution change what the trip pays?
 node _flowtest.js       # does anyone have to type into Trip_Level?
 node _apitest.js        # the dispute-claim contract across all three hops
+node _adminunsenttest.js # ADMIN: an untransferred trip is visible AND visibly marked
+node _kmresolvetest.js  # does a RESOLVED km/amount actually reach the trip row and the bill?
+node _resolveduitest.js # and does the panel still show it after the vendor accepts?
 node _uitest.js         # panel: drives a real browser
 ```
 
@@ -42,6 +45,8 @@ node _rtotest.js
 node _resolvetest.js
 node _flowtest.js
 node _apitest.js
+node _pendingtest.js
+node _adminunsenttest.js
 node _uitest.js
 ```
 
@@ -53,14 +58,18 @@ Every harness exits non-zero on any failure.
 | `_guardtest.js` | 81 | every refusal path in `Actions.gs` |
 | `_rtotest.js` | 75 | the RTO resolution table |
 | `_datetest.js` | 69 | dates — the failure mode that never shouts |
-| `_importtest.js` | 60 | the CSV resolution door + door-equivalence |
+| `_importtest.js` | 87 | the CSV resolution door + door-equivalence + re-run contract |
 | `_billtest.js` | 37 | the MIS vs an independent CSV sum |
 | `_paritytest.js` | 35 | panel ↔ MIS parity |
 | `_matrixtest.js` | 23 | the exhaustive classification matrix |
 | `_apitest.js` | 22 | the `claim_*` contract across three files |
 | `_resolvetest.js` | 21 | does an upheld resolution move money? |
-| `_flowtest.js` | 10 | nobody types into `Trip_Level` |
-| **total** | **658** | |
+| `_flowtest.js` | 13 | nobody types into `Trip_Level` |
+| `_kmresolvetest.js` | 56 | a resolved KM / amount reaches the trip row and the bill |
+| `_resolveduitest.js` | 26 | and the panel still shows it after the vendor accepts |
+| `_pendingtest.js` | 16 | a vendor's confirm survives a reload before the sync runs |
+| `_adminunsenttest.js` | 16 | admin sees untransferred trips, and can tell them apart |
+| **total** | **802** | |
 
 ---
 
@@ -262,3 +271,77 @@ Stated plainly, so it is a known gap rather than a blind spot:
 - **Live master data.** These harnesses run on `demo-data/`. They prove the *code* is right; they cannot
   prove the *sheet* is. `docs/SANITY_CHECK_CONTRACTS_2026-08.md` is the live-data counterpart, and its
   five findings are still open.
+
+## `_adminunsenttest.js` — the admin view must show what the vendor cannot
+
+`_buildAdminPayload()` uses `allTrips: true`, so trips with `sent_to_vendor_flag != Yes` are included **on
+purpose** — an admin needs to see the transfer backlog. But `vendor_status` reads `Pending` for those trips
+exactly as it does for a trip the vendor can already act on, so until `sent` was carried into the payload
+the two were pixel-identical and the backlog looked missing.
+
+| Area | Checks |
+|---|---|
+| the payload | every admin trip carries a boolean `sent`; at least one is `false`; an untransferred trip still reports `status: 'pending'` — which is *why* the chip is needed |
+| the header | names the backlog, and the number matches the payload exactly |
+| the row | the amber "Not yet sent to vendor" chip renders on the right trip, with a tooltip naming `sent_to_vendor_flag` |
+| the reverse direction | **no chip and no backlog line can ever reach a vendor** — asserted both from the DOM and from the payload (every vendor trip is `sent === true`) |
+| logout | returns to the login screen and leaves no panel on screen. Also **records** that `logoutFn()` does not `location.reload()`, so 14 rows stay in the DOM — a future fix will surface here as a failure |
+
+Runs the real `index.html` in Chromium against a real `_buildAdminPayload()`. If `sent` goes missing from
+`Code.gs` the harness says so in words rather than crashing on an empty array.
+
+
+## `_kmresolvetest.js` — a resolved KM / amount must reach the trip row and the bill
+
+Added 27 Aug 2026, after finding that **166 of 166 resolved disputes on the live sheet had never reached
+`Trip_Level`** — 1,974.216 km. `resolved_at` was the permanent "already applied" guard and it was stamped
+at the top of the applier's loop, *before* any `resolved_*` value was read, so *mark Resolved → timer
+fires → type the number* lost the number for good. Full account in
+`docs/FIX_LOST_RESOLUTIONS_2026-08-27.md`.
+
+What it pins:
+
+- **Precedence with an explicit blank test, not `||`.** A dispute resolved to **0 km** is a real outcome
+  and must not fall through to the system value — a `_num(a) || _num(b)` chain gets that wrong, and §1
+  fails if anyone reintroduces one. Blank must still mean blank.
+- **The system column is never written.** `total_trip_km` / `adhoc_amount` stay as the engine left them,
+  so the original is auditable and a re-push of `Trip_Level` cannot revert a correction.
+- **The exact live sequence**, replayed on the real dispute row: note-only first pass, `resolved_km`
+  typed after the stamp, vendor already accepted. The late value must land, be reported as
+  `RECONCILED`, and must NOT reopen the trip or re-notify the vendor. A third pass writes nothing.
+- **`repairMissedResolutions()`** — dry run writes nothing, apply is idempotent, the `row_id` fallback
+  finds the one live dispute whose `trip_id` holds the row_id, `vendor_status` is never touched, an Open
+  dispute is never repaired, `resolved_km` stays ignored on zonal, and a **missing column is named** (via
+  a `HIDE_TL_COLS` hook that removes it from the fake header) rather than silently no-op'ing.
+- **`_sameCell()`** directly. The first cut of the idempotent write helper compared `_num()` on anything
+  containing a digit, so `RJK7-X` and `RJK10-Y` both reduced to `0` and a `contract_id` correction was
+  skipped as "already correct". §4 exists because `_importtest`'s door-parity check caught that.
+- **The ONE RTO RULE still wins.** A resolved KM on a still-RTO trip contributes nothing; it takes both
+  levers — `resolved_challan_type` *and* `resolved_km` — in one resolution.
+- **Non-vacuity** (§6): reverts the classifier to `total_trip_km` only and asserts this harness fails;
+  then simulates the old `resolved_at` gate and asserts the resolution is lost, i.e. the bug reproduces.
+
+## `_resolveduitest.js` — and the panel must still show it after the vendor accepts
+
+The data loss was invisible because of two panel defects, both driven here in real Chromium:
+
+- The KM cell rendered `t.km` alone, so a corrected trip looked identical to an uncorrected one. It now
+  carries a **"revised from 167.074 km"** chip off the new `kmWas` / `amtWas` payload field.
+- **"View dispute" was gated on `status==='disputed'||'reconfirm'`.** The Resolution block in that dialog
+  reads `resolved_km` live from `Disputes_Log` and was the *only* place the panel ever showed it — so it
+  vanished at the exact moment the vendor pressed Accept. That is what made an accepted correction read
+  as a revert. The link now shows whenever the trip has a dispute, and says "View resolution" once
+  settled.
+
+§2b also pins that a `reconfirm` trip is **not bulk-selectable** — the row checkbox renders only for
+`status==='pending'`. This matters because `/api/action`'s `ACTIONABLE` map *does* accept `reconfirm`
+inside a bulk confirm, so that render gate is the only thing preventing a bulk accept of resolutions no
+one reviewed. §4 restores both old renderers and proves the bug reproduces.
+
+## A test can encode a bug as a guarantee
+
+`_importtest.js` section 7 used to assert *"a stamped row is skipped forever (safe on a timer)"*. That is
+an accurate description of the defect, written as a promise, and it passed for weeks. It has been
+rewritten to the new contract, with the old sequence kept as an explicit non-vacuity probe.
+
+**When a fix requires deleting an assertion, that assertion is the thing to read hardest.**
