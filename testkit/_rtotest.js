@@ -1,7 +1,15 @@
 /* THE RTO RESOLUTION TABLE — "how does a person resolve an RTO-only dispute?", as executable fact.
    This file used to only PRINT the answers, which meant it could never fail and never protected
-   anything. Every line now asserts the exact outcome, so the ONE RTO RULE (an RTO trip pays nothing,
-   whatever its scope or billing type — applied BEFORE any resolved value) cannot be quietly weakened.
+   anything. Every line now asserts the exact outcome, so the RTO RULE cannot be quietly weakened.
+
+   THE RULE CHANGED ON 2026-09-08. It used to be one line — "an RTO trip pays nothing, whatever its
+   scope or billing type". It is now two:
+       REGULAR (either scope, replacement included) + RTO  ->  pays 0, and no KM reaches the slab
+       ADHOC   (either scope)                       + RTO  ->  IS PAID, at the adhoc amount
+   The Regular arm is unchanged and is still asserted here exactly as it was, which is what stops the
+   change from having quietly loosened everything. The Adhoc arm is the new construct: ops were
+   lifting the RTO marking through dispute resolution to get adhoc RTO trips paid, and that workaround
+   is what put a rupee figure into challan_type_final on four live rows.
 
    The table it prints is the same table in docs/DISPUTE_RESOLUTION_RUNBOOK.md. If they ever disagree,
    this file is the one telling the truth.
@@ -47,10 +55,15 @@ ck(P(Object.assign({},a,{challan_type_final:'Forward Only'})).km===0,
 
 console.log('\nB) LOCAL ADHOC — adhoc_amount is already on the row');
 var b={route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only',adhoc_amount:4944};
-chk('as it stands',b,{rto:true,billing:'Adhoc',payable:0});
+chk('as it stands',b,{rto:true,billing:'Adhoc',payable:4944});
 chk('+ resolved_challan_type only',Object.assign({},b,{challan_type_final:'Forward Only'}),
     {rto:false,billing:'Adhoc',payable:4944,kmToSlab:false});
-ck(true,'LOCAL ADHOC: resolved_challan_type ALONE restores the money — the amount is already on the row');
+ck(P(b).payable===P(Object.assign({},b,{challan_type_final:'Forward Only'})).payable,
+   'LOCAL ADHOC: the RTO marking no longer changes the money at all — 4944 either way (2026-09-08). '
+   +'It used to pay 0 until resolved_challan_type lifted the RTO, which is the workaround this removes');
+ck(P(b).rto===true && P(b).payable>0,
+   'and the trip is still RECORDED as an RTO while being paid — the marking is a fact about the run, '
+   +'not a payment switch');
 
 console.log('\nC) ZONAL REGULAR — zonal_rfq_amount is already on the row');
 var c={route_scope:'Zonal',rfq_id:'R1',billing_type_system:'Regular',challan_type:'RTO only',zonal_rfq_amount:5300};
@@ -61,9 +74,10 @@ ck(true,'ZONAL REGULAR: resolved_challan_type ALONE restores the RFQ amount');
 
 console.log('\nD) ZONAL ADHOC');
 var d={route_scope:'Zonal',billing_type_system:'Adhoc',challan_type:'RTO only',adhoc_amount:6100};
-chk('as it stands',d,{rto:true,billing:'Adhoc',payable:0});
+chk('as it stands',d,{rto:true,billing:'Adhoc',payable:6100});
 chk('+ resolved_challan_type only',Object.assign({},d,{challan_type_final:'Forward Only'}),
     {rto:false,billing:'Adhoc',payable:6100,kmToSlab:false});
+ck(P(d).payable===6100,'ZONAL ADHOC RTO is paid too — one rule, both scopes (answered 2026-09-08)');
 
 console.log('\nE) "it WAS an RTO but a part-run is payable" — lift + flip to Adhoc + amount');
 chk('challan=Forward Only, billing_resolved=Adhoc, adhoc=2500',
@@ -74,20 +88,34 @@ ck(true,'PART-RUN: lift the RTO, flip to Adhoc, and the settled figure is paid a
 console.log('\nF) CAN you pay a trip that STAYS marked RTO?');
 chk('rto kept, zonal_rfq_amount_final = 5300',Object.assign({},c,{zonal_rfq_amount_final:5300}),
     {rto:true,payable:0});
-chk('rto kept, adhoc_amount = 4944',Object.assign({},b,{adhoc_amount:4944}),{rto:true,payable:0});
+chk('rto kept, adhoc_amount = 4944',Object.assign({},b,{adhoc_amount:4944}),{rto:true,payable:4944});
 chk('rto kept, resolved_km = 900',Object.assign({},a,{total_trip_km:900}),
     {rto:true,payable:0,kmToSlab:false});
 chk('rto kept, flipped to Adhoc with an amount',Object.assign({},a,{billing_type_resolved:'Adhoc',adhoc_amount:3000}),
-    {rto:true,billing:'Adhoc',payable:0});
-/* THE ONE RTO RULE, stated as an assertion rather than a comment: no combination of resolved values
-   can make an RTO trip pay. The ONLY lever is resolved_challan_type. This is why an ops user who
-   fills resolved_amount on an RTO dispute and stops there has done nothing. */
-[[c,{zonal_rfq_amount_final:9999}],[b,{adhoc_amount:9999}],[a,{total_trip_km:9999}],
- [a,{billing_type_resolved:'Adhoc',adhoc_amount:9999}],[d,{adhoc_amount:9999}],
- [c,{billing_type_resolved:'Adhoc',adhoc_amount:9999}]].forEach(function(pair,i){
+    {rto:true,billing:'Adhoc',payable:3000});
+ck(true,'NOTE: since 2026-09-08 flipping an RTO trip to Adhoc pays it WITHOUT lifting the RTO. That is '
+   +'a second, easier route to paying a part-run than the E) sequence below, and ops should know it');
+/* THE REGULAR ARM, stated as an assertion rather than a comment: while the trip stays Regular, no
+   resolved value can make an RTO trip pay. The ONLY lever is resolved_challan_type. This is why an
+   ops user who fills resolved_amount on a Regular RTO dispute and stops there has done nothing.
+   This arm did NOT change on 2026-09-08 and these are the same rows that guarded it before. */
+[[c,{zonal_rfq_amount_final:9999}],[a,{total_trip_km:9999}],
+ [a,{total_trip_km:9999,km_accumulated_flag:'Yes'}],
+ [c,{zonal_rfq_amount:9999,zonal_rfq_amount_final:8888}]].forEach(function(pair,i){
   ck(P(Object.assign({},pair[0],pair[1])).payable===0,
-     'ONE RTO RULE #'+(i+1)+': no resolved value pays an RTO trip without resolved_challan_type');
+     'REGULAR RTO #'+(i+1)+': no resolved value pays a REGULAR RTO trip without resolved_challan_type');
 });
+/* THE ADHOC ARM: the same shapes, but adhoc — and every one of them now pays. Kept in exactly the
+   old form so the diff between the two blocks IS the rule change, readable side by side. */
+[[b,{adhoc_amount:9999}],[d,{adhoc_amount:9999}],
+ [a,{billing_type_resolved:'Adhoc',adhoc_amount:9999}],
+ [c,{billing_type_resolved:'Adhoc',adhoc_amount:9999}]].forEach(function(pair,i){
+  ck(P(Object.assign({},pair[0],pair[1])).payable===9999,
+     'ADHOC RTO #'+(i+1)+': an ADHOC RTO trip pays its amount with the RTO marking left in place');
+});
+ck(P(Object.assign({},b,{adhoc_amount:9999})).kmToSlab===false
+   && P(Object.assign({},a,{total_trip_km:9999})).kmToSlab===false,
+   'and neither arm ever puts RTO KM into a grouped slab — that half of the rule is untouched');
 
 console.log('\nG) the trap: a resolved_challan_type that still STARTS with "rto"');
 var trap={'Forward Only':false,'Forward + RTO':false,'RTO cancelled':true,'rto reversed':true,'Not RTO':false};
@@ -106,9 +134,13 @@ ck(P(Object.assign({},c,{challan_type_final:'Not RTO'})).payable===5300,
 console.log('\nH) the panel sends the right claim shape for an RTO trip');
 var html=fs.readFileSync(__dirname+'/../vercel-app/index.html','utf8');
 ck(/claim_challan_type/.test(html),'index.html sends claim_challan_type');
-ck(/if\s*\(\s*disputeTrip\.rto\s*\)\s*claim\.claim_challan_type\s*=\s*'Forward Only'/.test(html.replace(/\s+/g,' '))
-   || /disputeTrip\.rto[\s\S]{0,80}claim_challan_type/.test(html),
-   'and it pre-fills it to "Forward Only" when the disputed trip is an RTO');
+var _flat=html.replace(/\s+/g,' ');
+ck(/if \( disputeTrip\.rto && disputeTrip\.billing!=='Adhoc'\) claim\.claim_challan_type = 'Forward Only'/.test(_flat)
+   || /disputeTrip\.rto && disputeTrip\.billing!=='Adhoc'[\s\S]{0,80}claim_challan_type/.test(_flat),
+   'it pre-fills claim_challan_type to "Forward Only" for a REGULAR RTO trip');
+ck(!/if \( disputeTrip\.rto \) claim\.claim_challan_type/.test(_flat),
+   'and NOT for an adhoc one — since 2026-09-08 an adhoc RTO is already paid, so lifting its RTO '
+   +'would change what the trip WAS in order to fix what it is WORTH');
 /* the 2026-08-08 decision: the vendor-facing REASON is "claim the KM / Amount", never a category
    called "Not an RTO Trip". The RTO claim is folded into the existing amount/KM reason, and the RTO
    consequence is explained in the note body — which is prose, not a label. So the assertion is on the

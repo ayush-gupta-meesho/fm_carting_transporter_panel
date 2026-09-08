@@ -38,9 +38,12 @@ function ORACLE(t, defSet){
   else   rto = lc(t.challan_type).indexOf('rto')===0
             || (lc(t.km_accumulated_flag)!=='yes' && km===0 && !isAdhoc && st(t.km_accumulated_flag)!=='');
 
-  // the amount matrix, and the ONE RTO RULE applied FIRST                              [§2]
+  /* the amount matrix, with the RTO RULE in its 2026-09-08 two-part form:
+       Regular (either scope, replacement included) + RTO -> 0
+       Adhoc   (either scope)                      + RTO -> paid, at the adhoc amount
+     So the RTO gate applies to the Regular arm only. Adhoc is tested first.        [§2] */
   var zonalAmt = nm(t.zonal_rfq_amount_final) || nm(t.zonal_rfq_amount);
-  var payable  = rto ? 0 : (isAdhoc ? nm(t.adhoc_amount) : (isZonal ? zonalAmt : 0));
+  var payable  = isAdhoc ? nm(t.adhoc_amount) : (rto ? 0 : (isZonal ? zonalAmt : 0));
 
   // only Local + Regular + non-RTO KM ever reaches a slab                              [§2]
   var kmToSlab = !isZonal && !isAdhoc && !rto;
@@ -105,8 +108,17 @@ bad.forEach(function(b){ console.log('    MISMATCH '+b.field+': code='+b.got+' s
 /* the specific invariants the amount matrix promises */
 function P(o){ return _classifyTrip(Object.assign({},FIXED,o),{GJ03AA1001:true},'Regular'); }
 ck(P({route_scope:'Zonal',challan_type:'RTO only'}).payable===0, 'a zonal RTO pays 0 (rule 8)');
-ck(P({route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only'}).payable===0,
-   'a LOCAL ADHOC RTO pays 0 too (the ONE RTO RULE, decided 2026-08-07)');
+/* the 2026-09-08 change, asserted from both ends so neither arm can drift alone */
+ck(P({route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only',adhoc_amount:4944}).payable===4944,
+   'a LOCAL ADHOC RTO is PAID its adhoc amount (the 2026-09-08 construct)');
+ck(P({route_scope:'Zonal',billing_type_system:'Adhoc',challan_type:'RTO only',adhoc_amount:6100}).payable===6100,
+   'and a ZONAL ADHOC RTO is paid the same way — one rule, both scopes');
+ck(P({route_scope:'Local',billing_type_system:'Regular',challan_type:'RTO only',total_trip_km:180}).payable===0,
+   'while a LOCAL REGULAR RTO still pays 0 — the arm that did NOT change');
+ck(P({route_scope:'Local',billing_type_system:'Regular',challan_type:'RTO only',total_trip_km:180,replacement_flag_system:'Yes'}).payable===0,
+   'and a REPLACEMENT RTO pays 0 too, because a replacement row is a Regular row');
+ck(P({route_scope:'Local',billing_type_system:'Regular',challan_type:'RTO only',total_trip_km:180}).kmToSlab===false,
+   'a Regular RTO still contributes no KM to the slab')
 ck(P({route_scope:'Zonal',billing_type_final:'Adhoc'}).billing==='Regular',
    "ground's billing_type_final is ignored on zonal (rule iii)");
 ck(P({route_scope:'Local',billing_type_final:'Adhoc'}).billing==='Adhoc',

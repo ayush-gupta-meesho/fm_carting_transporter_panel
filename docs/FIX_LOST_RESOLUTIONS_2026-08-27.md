@@ -164,8 +164,9 @@ column, never notifies anyone, and names any missing column instead of silently 
 2. **Run `1 · Create / verify tabs`.** This appends `total_trip_km_resolved` and `adhoc_amount_resolved`
    to `Trip_Level` (columns 41 and 42). Nothing applies until these two columns exist — the repair tool
    will tell you so by name rather than failing quietly.
-3. **Run `5a · Repair missed resolutions`.** Read the dry run first. Expect ~166 rows and a KM delta of
-   **+1,974.216**, all oracle `18838`. Then apply.
+3. **Run `5a · Check resolutions are in sync`** (read-only). Expect ~166 rows out of sync and a KM
+   delta of **+1,974.216**, all oracle `18838`. Then run **menu 4** to apply them — the applier is now
+   self-healing, so that is all it takes. Re-run 5a afterwards; it should report 0.
 4. **Deploy the panel** — merge to `main`, since Vercel builds production from `main`.
 5. **Run `4 · Apply vendor actions NOW`** so the snapshot the panel reads is rebuilt.
 

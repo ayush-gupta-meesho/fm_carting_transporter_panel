@@ -225,7 +225,17 @@ for(const s of specimens){
   console.log('    '.padEnd(28)+' current: '+curVals.join(' | '));
   if(/RTO/.test(s.k)){
     const vp=await page.$eval('#panel-value',e=>e.innerText).catch(()=>'');
-    ck(/not an RTO trip/i.test(vp),'an RTO trip explains that claiming a value also claims it was not an RTO — '+s.k);
+    /* 2026-09-08: only a REGULAR RTO trip loses money to the RTO marking, so only there does a value
+       claim double as a claim that it was not an RTO. On an ADHOC RTO trip the money is already paid,
+       so that copy would be false — it must instead say the trip IS paid. */
+    if(/Adhoc/.test(s.k)){
+      ck(!/not an RTO trip/i.test(vp),
+         'an ADHOC RTO trip does NOT claim it was not an RTO — the trip is paid as it stands — '+s.k);
+      ck(/is<\/b> paid|is paid/i.test(vp),
+         'and it tells the vendor an adhoc trip is paid even on an RTO-only challan — '+s.k);
+    } else {
+      ck(/not an RTO trip/i.test(vp),'a REGULAR RTO trip explains that claiming a value also claims it was not an RTO — '+s.k);
+    }
   }
   ck(!/ZONAL::|::ZONAL/.test(title),'modal title clean for '+s.k);
   ck(curVals.every(v=>!/null|undefined|NaN/.test(v)),'no null in readonly fields for '+s.k);
@@ -267,10 +277,14 @@ for(const s of specimens){
   console.log('    → posted: '+JSON.stringify(b.categories)+' '+JSON.stringify(
     Object.keys(b).filter(k=>k.indexOf('claim_')===0).reduce((o,k)=>(o[k]=b[k],o),{})));
   ck(b.type==='dispute'&&b.trip_id===s.id,'posts the right trip for '+s.k);
-  /* An RTO trip pays nothing in either scope, so a value claim on one is only meaningful if the RTO
-     marking is lifted too — claim_challan_type is what does that. Without it the resolution is a no-op. */
-  if(/RTO/.test(s.k)) ck(b.claim_challan_type==='Forward Only',
-    'an RTO trip carries claim_challan_type so an upheld claim is not a no-op — '+s.k);
+  /* A REGULAR RTO trip pays nothing in either scope, so a value claim on one is only meaningful if the
+     RTO marking is lifted too — claim_challan_type is what does that, and without it the resolution is
+     a no-op. An ADHOC RTO trip is already paid (2026-09-08), so attaching claim_challan_type would
+     rewrite what the trip WAS in order to change what it is WORTH. It must not be sent. */
+  if(/RTO/.test(s.k) && !/Adhoc/.test(s.k)) ck(b.claim_challan_type==='Forward Only',
+    'a REGULAR RTO trip carries claim_challan_type so an upheld claim is not a no-op — '+s.k);
+  else if(/RTO/.test(s.k)) ck(!b.claim_challan_type,
+    'an ADHOC RTO trip sends NO challan claim — its amount claim stands on its own — '+s.k);
   else ck(!b.claim_challan_type,'a non-RTO trip sends no challan claim — '+s.k);
   if(zonal){
     if(/Adhoc/.test(s.k)) ck(b.claim_amount==='9999','zonal adhoc claims claim_amount — '+s.k);

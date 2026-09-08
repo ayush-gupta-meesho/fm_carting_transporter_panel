@@ -1,0 +1,43 @@
+trip_date,vendor_oracle_id,vendor_name,vehicle_size,pegged_km_slab,hours_slab,vehicles_failed,resolved_contract_id,day_rate,status,remarks
+
+2026-08-17,18764,Buraq Transcarriers Private Limited,7 FT,1200,12hr,1,,,BLOCKED,"no contract on (oracle, size, hours, slab) covering this date"
+
+2026-08-17,20426,Ssk Roadlines Private Limited,14 FT,1500,12hr,1,MUM14-20426-20260817-31,2600.00,OK,
+
+2026-08-17,19434,Yah Yah Transcarrier Private Limited,10 FT,1500,12hr,1,MUM10-19434-20260817-31,2366.67,OK,
+
+2026-08-17,19434,Yah Yah Transcarrier Private Limited,7 FT,1500,,1,,,BLOCKED,NEEDS hours_slab
+
+2026-08-17,19434,Yah Yah Transcarrier Private Limited,8 FT,1500,12hr,1,MUM8-19434-20260817-31,1800.00,OK,
+
+2026-08-18,19434,Yah Yah Transcarrier Private Limited,7 FT,1500,,1,,,BLOCKED,NEEDS hours_slab
+
+2026-08-20,18764,Buraq Transcarriers Private Limited,7 FT,1200,12hr,1,MUM7-18764-20260820-31,1566.67,OK,
+
+2026-08-21,19434,Yah Yah Transcarrier Private Limited,8 FT,1500,12hr,1,MUM8-19434-20260817-31,1800.00,OK,
+
+2026-08-24,20882,Bharat Enterprises,8 FT,1500,12hr,1,MUM8-20882-20260817-31,1800.00,OK,
+
+2026-08-25,20882,Bharat Enterprises,8 FT,1500,12hr,1,MUM8-20882-20260817-31,1800.00,OK,
+
+2026-08-26,20882,Bharat Enterprises,8 FT,1500,12hr,1,MUM8-20882-20260817-31,1800.00,OK,
+
+2026-08-26,19434,Yah Yah Transcarrier Private Limited,7 FT,1000,12hr,1,MUM7-19434-20260817-31,1433.33,OK,only the 12hr contract has a 1000 km vehicle
+
+2026-08-27,20882,Bharat Enterprises,8 FT,1500,12hr,1,MUM8-20882-20260817-31,1800.00,OK,
+
+2026-08-28,20882,Bharat Enterprises,8 FT,1500,12hr,1,MUM8-20882-20260817-31,1800.00,OK,
+
+2026-08-22,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,
+
+2026-08-26,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,
+
+2026-08-27,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,
+
+2026-08-28,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,
+
+2026-08-29,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,
+
+2026-08-30,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,was 2028 — corrected
+
+2026-08-31,20271,Logistics link,7 FT,1000,12hr,1,MUM7-20271-20260822-31,1566.70,OK,was 2028 — corrected

@@ -54,9 +54,11 @@ console.log('  after resolved_challan_type + resolved_km=180  : km='+P(lr).km+',
 ck(P(lr).kmToSlab===true&&P(lr).km===180,'lifting the RTO puts the 180 km into the slab');
 
 let la={route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only',adhoc_amount:4944};
-ck(P(la).payable===0,'a local ADHOC RTO trip pays nothing (the ONE RTO RULE)');
+ck(P(la).payable===4944,
+   'a local ADHOC RTO trip IS paid its adhoc amount (the 2026-09-08 construct; it used to pay 0)');
+ck(P(la).rto===true,'and it stays marked RTO while being paid');
 la.challan_type_final='Forward Only';
-ck(P(la).payable===4944,'and lifting the RTO restores its adhoc amount, ₹'+P(la).payable);
+ck(P(la).payable===4944,'lifting the RTO changes nothing on an adhoc trip — ₹'+P(la).payable+' either way');
 
 console.log('\n── 1b. the SAME column works on a LOCAL trip ──');
 let L={route_scope:'Local',billing_type_system:'Regular',challan_type:'Forward Only',total_trip_km:120};

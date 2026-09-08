@@ -74,9 +74,17 @@ silently.
 `resolved_aggregate_vehicle` do nothing on a zonal trip — there is no KM slab and no vehicle level. The
 run log names every one it ignored, so check the menu-4 alert.
 
-**3. An RTO trip pays nothing until the RTO is lifted.** `payable = rto ? 0 : …` is applied *before* any
-resolved value, so `resolved_zonal_amount` or `resolved_km` alone on an RTO trip is a **no-op**. If you
-are agreeing the trip should pay, you must also set `resolved_challan_type`. Set both in the same row.
+**3. An RTO trip pays nothing until the RTO is lifted — but ONLY if it is Regular.** Since **08 Sep 2026**
+the rule has two parts:
+
+| the trip | RTO effect |
+|---|---|
+| **Regular** (either scope, replacement included) | pays **nothing**, and no KM reaches the slab. `resolved_km` or `resolved_zonal_amount` alone is a **no-op** — you must also set `resolved_challan_type`. |
+| **Adhoc** (either scope) | **is paid** its `adhoc_amount`, RTO or not. Nothing needs lifting. |
+
+So on an **adhoc** dispute, never set `resolved_challan_type` just to make the trip pay — it already
+does. Setting it changes what the trip *was* in order to fix what it is *worth*, and the panel no longer
+attaches that claim for adhoc rows precisely so this cannot happen by accident.
 
 ---
 
@@ -130,12 +138,15 @@ any resolved value. So there are only two real outcomes, and one of them needs a
 Set **`resolved_challan_type`** to the challan that actually applies — normally `Forward Only`. What that
 alone restores, measured against the real classifier:
 
-| The trip | After `resolved_challan_type = Forward Only` alone | Second field needed? |
-|---|---|---|
-| **Local Regular** | RTO lifted, but **km = 0 → still pays nothing** | **YES — also set `resolved_km`** |
-| **Local Adhoc** | pays its `adhoc_amount` again (₹4,944 in the live example) | no |
-| **Zonal Regular** | pays its `zonal_rfq_amount` again (₹5,300) | no |
-| **Zonal Adhoc** | pays its `adhoc_amount` again (₹6,100) | no |
+| The trip | Paid while still marked RTO? | After `resolved_challan_type = Forward Only` alone | Second field needed? |
+|---|---|---|---|
+| **Local Regular** | ₹0 | RTO lifted, but **km = 0 → still pays nothing** | **YES — also set `resolved_km`** |
+| **Local Adhoc** | **its `adhoc_amount`** (₹4,944 in the live example) | unchanged — ₹4,944 either way | no, and no challan lift either |
+| **Zonal Regular** | ₹0 | pays its `zonal_rfq_amount` again (₹5,300) | no |
+| **Zonal Adhoc** | **its `adhoc_amount`** (₹6,100) | unchanged — ₹6,100 either way | no, and no challan lift either |
+
+The middle column is the 08 Sep 2026 change. **Both adhoc rows used to be ₹0 while marked RTO**, which
+is why ops were lifting the challan to release the money; that is no longer necessary and should stop.
 
 **Only Local Regular needs a second field**, and it always does: the engine writes `total_trip_km = 0` on
 an RTO row, so lifting the RTO gives you a trip that is *eligible* for the slab and contributes zero. Set
@@ -163,20 +174,37 @@ the only thing the vendor gets.
 
 ### "It was an RTO, but a part-run is payable"
 
-**You cannot pay a trip that stays marked RTO.** Proven — with the RTO in place, writing
-`zonal_rfq_amount_final = 5300` or leaving `adhoc_amount = 4944` both still pay **₹0**. The ONE RTO RULE is
-applied first and nothing downstream overrides it.
+**On a REGULAR trip you still cannot pay it while it stays marked RTO.** With the RTO in place,
+`resolved_zonal_amount = 5300` or `resolved_km = 900` both still pay **₹0**.
 
-If a part payment is agreed, lift the RTO and bill it as adhoc for the agreed sum:
+Since 08 Sep 2026 there are two ways out, and the second is usually the honest one:
+
+**(a) It really was a forward run — lift the RTO.** Use this only when the challan was wrong.
 
 ```
 dispute_status         = Resolved
 resolved_challan_type  = Forward Only
-resolved_billing_type  = Adhoc
-resolved_amount        = 2500
-resolution_note        = returned from RJKS, part-run agreed at Rs 2,500
+resolved_km            = 180            <- LOCAL REGULAR ONLY
+resolution_note        = challan was wrong, GPS confirms the forward leg
 resolved_by            = ops@valmo
 ```
+
+**(b) It WAS an RTO and a part-run is payable — flip it to Adhoc and leave the RTO alone.** An adhoc
+trip is paid whether or not it is an RTO, so this pays the agreed figure while keeping the record
+truthful about what the vehicle actually did.
+
+```
+dispute_status         = Resolved
+resolved_billing_type  = Adhoc
+resolved_amount        = 2500
+resolution_note        = returned from RJKS, part-run agreed at Rs 2,500; trip stays recorded as RTO
+resolved_by            = ops@valmo
+```
+
+Prefer **(b)**. Option (a) rewrites the challan type, which is a statement about the run itself, and it
+is what ops reached for on 03 Sep when they typed a rupee figure into `resolved_challan_type` — an
+amount landing in a type column, and `resolved_amount` left blank, so the trip paid its original system
+figure instead of the settled one. The challan column is not a payment switch.
 
 Verified: that combination pays exactly ₹2,500 and keeps the KM out of the slab.
 

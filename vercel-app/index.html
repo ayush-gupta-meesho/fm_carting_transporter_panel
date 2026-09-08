@@ -736,10 +736,13 @@ function renderContracts(){
     /* The untransferred backlog is the number an admin actually acts on: it is how many trips are
        sitting in the sheet that no vendor can see yet. Counted from the payload rather than carried in
        summary{} so it stays correct even against a snapshot built before this change. */
-    var _unsent=allTrips().filter(function(t){return t.sent===false;}).length;
+    var _unsentAll=allTrips().filter(function(t){return t.sent===false;});
+    var _heldN=_unsentAll.filter(function(t){return !!t.hold;}).length;
+    var _unsent=_unsentAll.length-_heldN;   // held-on-purpose is not a backlog, so count it separately
     document.getElementById('asCount').textContent=(_s.over||0)+' over-utilised · '+(_s.under||0)
       +' under-utilised · '+(_s.onTrack||0)+' on track'
-      +(_unsent?('  ·  '+_unsent+' trip'+(_unsent===1?'':'s')+' NOT yet sent to vendor'):''); }
+      +(_unsent?('  ·  '+_unsent+' trip'+(_unsent===1?'':'s')+' NOT yet sent to vendor'):'')
+      +(_heldN?('  ·  '+_heldN+' held (Adhoc / RTO)'):''); }
   else document.getElementById('asCount').textContent='You have '+pendingCount()+' trips pending confirmation';
 
   var el=document.getElementById('contractList');
@@ -1037,8 +1040,13 @@ function renderMISInto(panelId, cid){
     else if(t.replTag==='repl'){ replCol='<span class="badge tag-repl-reg">Replacement</span><div class="repl-for" title="Replacing '+t.replFor+'">for <b>'+vehNoOf(t.cid,t.replFor)+'</b></div>'; }
     else { replCol='<span style="color:#C0C8D2;font-size:13px;">—</span>'; }
     var kmCell;
-    // ONE RTO RULE: an RTO trip pays nothing, whatever its scope or billing type.
-    if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not payable</div>';
+    /* RTO RULE, two parts (2026-09-08): a REGULAR RTO trip pays nothing and adds no KM; an ADHOC RTO
+       trip IS paid its trip amount. So the adhoc-RTO row shows the amount with an RTO badge over it —
+       never "Not payable", which is what made the panel and the MIS disagree by ₹31,746. */
+    if(t.rto && t.billing==='Adhoc') kmCell='<span class="adhoc-amt">'+money(t.amt)+'</span>'
+      +(t.amtWas!=null?('<div class="km-revised" title="Revised from '+money(t.amtWas)+' after your dispute was resolved">revised from '+money(t.amtWas)+'</div>'):'')
+      +'<div class="st-win" title="Challan: '+(t.challan||'RTO')+' — an adhoc trip is paid its amount even on an RTO-only challan">adhoc amount · RTO</div>';
+    else if(t.rto) kmCell='<span class="badge b-rto">RTO · 0 km</span><div style="font-size:9.5px;color:var(--muted);margin-top:2px;">Not payable</div>';
     // the RFQ is spelled out under the amount ONLY where the reference column is hidden, so the two
     // never repeat each other on the same row
     else if((t.scope||'Local')==='Zonal' && t.billing==='Regular') kmCell='<span class="adhoc-amt" style="color:#0E7C7B;">'+money(t.zamt||0)+'</span><div class="st-win rfq-sub"'+(t.rfq?' title="RFQ '+t.rfq+'"':'')+'>'+(_showRef?'zonal RFQ':(t.rfq?('RFQ '+t.rfq):'zonal RFQ · not set'))+'</div>';
@@ -1064,7 +1072,13 @@ function renderMISInto(panelId, cid){
     /* t.sent is false only on the ADMIN payload (built with allTrips), where untransferred trips are
        included on purpose. Guard on `=== false` so an older snapshot without the field — where sent is
        undefined — renders exactly as before instead of flagging every trip as unsent. */
-    if(IS_ADMIN && t.sent===false) statusCell+='<div class="st-unsent" title="sent_to_vendor_flag is not Yes — the vendor cannot see or act on this trip yet">Not yet sent to vendor</div>';
+    /* t.hold is set only on an untransferred trip the scheduled run is DELIBERATELY holding back
+       (Adhoc or RTO). Without it, a trip being held on purpose and a trip merely still inside its
+       ground window look identical, and the backlog reads as a bug. */
+    if(IS_ADMIN && t.sent===false) statusCell+='<div class="st-unsent" title="'
+      +(t.hold?('Held back by the scheduled run: billing type / challan is '+t.hold+'. Release it with menu 4 — the manual run is unfiltered.')
+              :'sent_to_vendor_flag is not Yes — the vendor cannot see or act on this trip yet')
+      +'">'+(t.hold?('Held · '+t.hold):'Not yet sent to vendor')+'</div>';
     var checkCell = _ro ? '' : (t.status==='pending'
       ? '<td><input type="checkbox" class="rowchk_'+panelId+'" data-cid="'+t.cid+'" data-tid="'+t.id+'" onchange="updateBulk(\''+panelId+'\')" style="width:15px;height:15px;accent-color:var(--blue);cursor:pointer;"/></td>'
       : '<td></td>');
@@ -1339,17 +1353,22 @@ function catPanelHtml(key,trip,cid){
     if(zonal){
       // a zonal trip carries no KM — it bills a fixed RFQ amount (zamt) or, if adhoc, adhoc_amount
       var _za=(trip.billing==='Adhoc')?trip.amt:trip.zamt;
-      var _cur=trip.rto?'₹0 — RTO, not payable':money(_za||0);
+      var _cur=(trip.rto && trip.billing!=='Adhoc')?'₹0 — RTO, not payable':money(_za||0);
       return '<div class="dp-title">Wrong amount</div>'
         +'<div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+_cur+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>'
-        +_dpNote(trip.rto
+        +_dpNote((trip.rto && trip.billing!=='Adhoc')
             ? 'This trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), so it currently pays nothing. Entering the amount you expected here is also a claim that <b>this was not an RTO trip</b> — if it is upheld, the RTO marking is lifted and the trip becomes payable.'
+            : (trip.rto
+                ? 'This adhoc trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), and it <b>is</b> paid — an adhoc trip earns its trip amount even on an RTO-only challan. So this is a plain amount claim: tell us the amount you expected. The RTO marking stays as it is.'
             : (trip.billing==='Adhoc'
                 ? 'This zonal trip is billed on its <b>amount</b>, not on an RFQ rate, so it carries no RFQ ID. There is no KM slab either — the amount is the whole of it.'
-                : 'Zonal trips are paid a fixed amount per trip from the RFQ'+(trip.rfq?(' ('+trip.rfq+')'):'')+'. There is no KM slab, so KM is not disputed here.'));
+                : 'Zonal trips are paid a fixed amount per trip from the RFQ'+(trip.rfq?(' ('+trip.rfq+')'):'')+'. There is no KM slab, so KM is not disputed here.')));
     }
-    var _rtoNote = trip.rto ? _dpNote('This trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), so it currently pays nothing and its KM is not added to any slab. Entering the value you expected here is also a claim that <b>this was not an RTO trip</b> — if it is upheld, the RTO marking is lifted and the KM or amount comes back.') : '';
-    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong Amount</div><div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+(trip.rto?'₹0 — RTO, not payable':money(trip.amt||0))+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>'+_rtoNote;
+    /* the RTO note only applies where RTO actually costs the vendor money — Regular. On adhoc the
+       trip is paid, so the note would be simply untrue. */
+    var _rtoNote = (trip.rto && trip.billing!=='Adhoc') ? _dpNote('This trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), so it currently pays nothing and its KM is not added to any slab. Entering the value you expected here is also a claim that <b>this was not an RTO trip</b> — if it is upheld, the RTO marking is lifted and the KM or amount comes back.') : '';
+    var _adhocRtoNote = (trip.rto && trip.billing==='Adhoc') ? _dpNote('This adhoc trip is marked <b>RTO</b> (challan: '+(trip.challan||'RTO')+'), and it <b>is</b> paid — an adhoc trip earns its trip amount even on an RTO-only challan. This is a plain amount claim; the RTO marking stays as it is.') : '';
+    if(trip.billing==='Adhoc') return '<div class="dp-title">Wrong Amount</div><div class="dp-row"><div class="dp-field"><label>Current amount</label><input readonly value="'+money(trip.amt||0)+'"/></div><div class="dp-field"><label>Correct amount (₹)</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct amount"/></div></div>'+_adhocRtoNote;
     return '<div class="dp-title">Wrong KM</div><div class="dp-row"><div class="dp-field"><label>Current KM</label><input readonly value="'+(trip.rto?'0 km (RTO)':((trip.km==null?'—':trip.km)+' km'))+'"/></div><div class="dp-field"><label>Correct KM</label><input id="dsp_value" inputmode="numeric" placeholder="Enter correct KM"/></div></div>'+_rtoNote;
   }
 
@@ -1425,10 +1444,12 @@ async function submitDispute(){
     if(zonal && disputeTrip.billing!=='Adhoc') claim.claim_zonal_amount=_numv(_vv);   // -> zonal_rfq_amount_final
     else if(zonal || disputeTrip.billing==='Adhoc') claim.claim_amount=_numv(_vv);    // -> adhoc_amount
     else claim.claim_km=_numv(_vv);
-    /* An RTO trip pays nothing whatever its scope, so a value claim on one only means anything if the
-       RTO marking is lifted too. challan_type_final is the only lever that does that, so the claim
-       rides along automatically — the vendor is not asked to name a challan type they do not use. */
-    if(disputeTrip.rto) claim.claim_challan_type='Forward Only';
+    /* On a REGULAR trip an RTO pays nothing, so a value claim only means anything if the RTO marking
+       is lifted too; challan_type_final is the only lever that does that, so the claim rides along
+       automatically and the vendor is not asked to name a challan type they do not use.
+       On an ADHOC trip the opposite holds since 2026-09-08 — the trip is already paid, so lifting the
+       RTO would silently change what the trip WAS in order to fix what it is WORTH. Never attach it. */
+    if(disputeTrip.rto && disputeTrip.billing!=='Adhoc') claim.claim_challan_type='Forward Only';
   }
   if(cats.indexOf('rfq')>-1){
     if(zonal && _rq) claim.claim_rfq_id=String(_rq.value).trim();

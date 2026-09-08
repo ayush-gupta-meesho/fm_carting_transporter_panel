@@ -1,6 +1,6 @@
 # Panel test kit — run this before every push
 
-Fifteen harnesses, **802 assertions**, all driving the **real** `Code.gs` / `Actions.gs` / `Billing.gs` /
+Seventeen harnesses, **921 assertions**, all driving the **real** `Code.gs` / `Actions.gs` / `Billing.gs` /
 `index.html` / `api/data.js` / `api/action.js` / `lib/core.js`. No hand-written fixtures anywhere: every number is produced by the real
 code, and every expectation is either an independent re-derivation from `docs/ZONAL_LOCAL_SCHEMA.md` or a
 comparison against the raw CSV. If any two files drift apart, one of these names the drift.
@@ -25,6 +25,8 @@ node _apitest.js        # the dispute-claim contract across all three hops
 node _adminunsenttest.js # ADMIN: an untransferred trip is visible AND visibly marked
 node _kmresolvetest.js  # does a RESOLVED km/amount actually reach the trip row and the bill?
 node _resolveduitest.js # and does the panel still show it after the vendor accepts?
+node _scheduledtest.js  # the scheduled run: does the Adhoc/RTO filter match anything at all?
+node _pftest.js         # placement failure: deducted once, never twice
 node _uitest.js         # panel: drives a real browser
 ```
 
@@ -67,9 +69,11 @@ Every harness exits non-zero on any failure.
 | `_flowtest.js` | 13 | nobody types into `Trip_Level` |
 | `_kmresolvetest.js` | 56 | a resolved KM / amount reaches the trip row and the bill |
 | `_resolveduitest.js` | 26 | and the panel still shows it after the vendor accepts |
+| `_scheduledtest.js` | 64 | the 14:30/18:30/22:30/03:30 run, and what it holds back |
+| `_pftest.js` | 53 | placement failure becomes a deduction, charged once |
 | `_pendingtest.js` | 16 | a vendor's confirm survives a reload before the sync runs |
 | `_adminunsenttest.js` | 16 | admin sees untransferred trips, and can tell them apart |
-| **total** | **802** | |
+| **total** | **921** | |
 
 ---
 
@@ -345,3 +349,75 @@ an accurate description of the defect, written as a promise, and it passed for w
 rewritten to the new contract, with the old sequence kept as an explicit non-vacuity probe.
 
 **When a fix requires deleting an assertion, that assertion is the thing to read hardest.**
+
+
+## `_scheduledtest.js` — the scheduled run, and the filter that matched nothing
+
+Added 27 Aug 2026 with the 14:30 / 18:30 / 22:30 / 03:30 IST job. It exists for one reason: **a filter
+that matches nothing looks exactly like a filter that works.**
+
+The requested rule was `challan_type = 'RTO Only'`. The live sheet stores **`RTO only`** with a
+lowercase o on 145 rows — a case-sensitive test matches **0 of 3,911**. §5 builds the filter exactly as
+worded and asserts that every Adhoc and RTO trip is sent to the vendor anyway. That assertion is the
+whole point of the file.
+
+What else it pins:
+
+- **The exact live strings.** `RTO only`, `RTO`, `rto only` and `RTO cancelled` are held;
+  **`Forward + RTO` (1,805 rows) is not** — the classifier does not treat those as RTO and they carry
+  payable KM. Blank challan is not assumed to be RTO.
+- **OR, not AND.** 451 rows held, not the 13 in the intersection. §5 measures the AND variant too.
+- **A held trip is untouched.** Not one cell written, no `Ground_Confirmation_Log` row. That is what
+  makes "release it later with menu 4" true rather than hopeful.
+- **Menu 4 stays unfiltered.** `transferReadyTrips()` with no args, and with `{}`, transfers
+  everything — including trips the scheduled run held on the previous line. If this ever fails, a held
+  trip can never be sent at all.
+- **Held trips stay eligible run after run**, and the count keeps being reported so the backlog cannot
+  go silent.
+- **Four triggers at 03:30 / 14:30 / 18:30 / 22:30**, daily, minute 30.
+- **The timezone refusal.** Clock triggers fire in the Apps Script PROJECT timezone, not the
+  spreadsheet's — the test sets the spreadsheet to IST and the project to `America/Los_Angeles`, which
+  is exactly how this goes wrong silently, and asserts the installer refuses and names the fix.
+- **Two-way mutual exclusion** with the 10-minute auto-apply, which transfers unfiltered and would
+  undo the filter within ten minutes.
+- **A failing step does not cost the sync.** With `drainActions` throwing, the report names it and the
+  Upstash push still happens, so the panel does not go stale behind one bug.
+
+Its trigger service is a fake that records what *would* be installed — hours, minutes, handler names —
+so the schedule itself is asserted rather than eyeballed in the Apps Script UI.
+
+
+## `_pftest.js` — placement failure is deducted once, never twice
+
+Added 4 Sep 2026 with the `Placement Failure` tab. The decision it protects: the deduction **is** the
+pro-rating, made visible. `active_days` and `monthly_rate` stay whole and this line is the only
+reduction. Full account in `docs/PLACEMENT_FAILURE_2026-09-04.md`.
+
+**§5 is the reason the file exists.** On Bharat's five real failures it asserts three things together:
+the deduction gives ₹45,000; trimming the masters to the 25 honoured vehicle-days gives the *same*
+₹45,000; and doing both would pay **₹36,000 against ₹45,000 owed**. So exactly one of the two may ever
+be applied, and if someone later also trims `active_days`, this section fails.
+
+It also caught a mistake in its own first draft: I asserted the net was "10 of 15 days" when the
+contract is 2 vehicles × 15 days = **25 of 30 vehicle-days**. The code was right and the expectation
+was wrong. The unit is the vehicle-day, and that only shows up on a multi-vehicle contract.
+
+What else it pins:
+
+- **The day rate is not a new number.** `monthly_rate / active_days` equals `tier / 30` on live
+  figures (27,000/15 = 54,000/30 = 1,800). Both routes, same rupee — so there was never a basis to
+  argue about.
+- **`hours_slab` is required**, with the real case: oracle 19434 has a 12hr and a 24hr 7 FT contract
+  on the same dates, both with 1,500 km vehicles, at ₹1,566.67 and ₹2,533.33 a day. A blank
+  `hours_slab` is refused rather than guessed.
+- **The string forms LH actually type** — `7FT`, `7 ft`, `  7 FT  ` all join to `7 FT`. The masters
+  and the input agree on nothing as raw strings.
+- **The date rule.** `dd-mm-yyyy` text is refused with a message naming the format, and the test
+  demonstrates *why* by showing `_toDate('05-08-2026')` really does come back as **May**. Real date
+  cells and `yyyy-mm-dd` are accepted. Third incident from this one format.
+- **All three BLOCK gates**, each asserted to name its numbers: the unpriceable row (with its sheet
+  row number), the duplicate paste (pointing at `vehicles_failed`), and the cap (40 failed vs 30
+  available).
+- **A missing tab deducts nothing and blocks nothing**, so billing keeps working before the tab is
+  created.
+- **Inconsistent masters are refused, not averaged** — two rates on one slab has no single day rate.

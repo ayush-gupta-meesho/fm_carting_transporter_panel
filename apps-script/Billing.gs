@@ -36,7 +36,11 @@
  **************************************************************************************************/
 
 /* ================================== CONFIG ================================== */
-var MIS_SHEET_ID = '';                       // <-- PASTE the FM Carting - Billing MIS sheet id here
+var MIS_SHEET_ID = '1q4TkNZTElZUV6NIymLPqYoKGkjWck14mxvRwjDQMoEc';   // FM Carting - Billing MIS
+                                             // set 2026-09-04. This is the WORKING WORKBOOK the MIS is
+                                             // written into and the Zonal paste is read from. It is a
+                                             // DIFFERENT file from the panel sheet — never point this
+                                             // at the panel sheet or menu 9 will overwrite live tabs.
 
 var MIS_EXCLUDE_ORACLES = ['ORC-4521'];      // dummy vendor data — excluded from the MIS by id.
                                              // It stays visible on the admin panel by design.
@@ -103,9 +107,15 @@ function refreshCostViewFromMenu() {
         || Math.abs(fixed - _num(c.fixed_monthly_value)) > 0.5) blocked.push(cid);
   });
 
+  var _pf = d.pf || { rowCount: 0, days: 0, amount: 0, unresolved: [], dupes: [], overCap: [] };
+  var _pfBad = _pf.unresolved.length + _pf.dupes.length + _pf.overCap.length;
   ui.alert('Cost view refreshed'
     + '\n\nContracts: ' + Object.keys(d.info).length
     + '\nZonal rows read: ' + zRows
+    + '\nPlacement Failure rows: ' + _pf.rowCount + '  (' + _pf.days + ' vehicle-day(s), \u20b9'
+      + Math.round(_pf.amount).toLocaleString('en-IN') + ' to deduct)'
+    + (_pfBad ? ('\n\n*** ' + _pfBad + ' Placement Failure problem(s) BLOCK the MIS. See the '
+        + 'Validation_Gates tab for the row numbers and reasons.') : '')
     + (blocked.length ? ('\n\n*** ' + blocked.length + ' contract(s) BLOCK — Contract_Info disagrees with '
         + 'Contract_Vehicles. Do not bill these:\n  ' + blocked.join('\n  ')) : '\n\nAll gates clear.')
     + (zo.length ? ('\n\n*** ' + zo.length + ' zonal oracle(s) match NO contract — ₹'
@@ -170,6 +180,8 @@ function generateVendorMisFromMenu() {
 
   var ss = _misWriteVendorMis(model);
   ui.alert('Vendor MIS created\n\n' + ss.getName()
+    + (model.totals.pfAmt ? ('\nLess placement failure: ' + model.totals.pfDays
+        + ' vehicle-day(s), −₹' + Math.round(model.totals.pfAmt).toLocaleString('en-IN')) : '')
     + '\n\nTotal payable: ₹' + Math.round(model.totals.payable).toLocaleString('en-IN')
     + '\n\nTo send it: open the link, then File → Download → Microsoft Excel (.xlsx)\n\n'
     + ss.getUrl());
@@ -191,7 +203,28 @@ function _misWriteVendorMis(m) {
   return ss;
 }
 
+/**
+ * Grow a sheet so a range can be written into it.
+ *
+ * A sheet created by insertSheet() is 1000 rows x 26 columns. Krushiv Enterprise's Local tab needs
+ * 1,571 rows (1,563 local trips plus headers and totals), so generating that vendor's MIS threw
+ * "The coordinates of the range are outside the dimensions of the sheet" and no other vendor's did —
+ * the next largest is Balaji at 581. Nothing in the writers was wrong; the sheet was simply too small.
+ *
+ * Padding by 200 rows means one insertRowsAfter call per tab in practice rather than one per row.
+ * Called at the top of every _vm* primitive AND before every bulk setValues, so a tab that grows past
+ * 1000 rows for any other reason (more trips, a longer dispute list) can never hit this again.
+ */
+function _vmFit(sh, row, col) {
+  var needR = Math.max(1, Math.ceil(_num(row) || 1));
+  var needC = Math.max(1, Math.ceil(_num(col) || 1));
+  var maxR = sh.getMaxRows(), maxC = sh.getMaxColumns();
+  if (needR > maxR) sh.insertRowsAfter(maxR, (needR - maxR) + 200);
+  if (needC > maxC) sh.insertColumnsAfter(maxC, (needC - maxC) + 4);
+}
+
 function _vmHead(sh, cols, l1, l2) {
+  _vmFit(sh, 2, cols);
   sh.getRange(1, 1, 1, cols).merge().setValue('  ' + l1)
     .setBackground(C_NAVY).setFontColor('#FFFFFF').setFontFamily('Arial')
     .setFontSize(14).setFontWeight('bold').setVerticalAlignment('middle');
@@ -203,6 +236,7 @@ function _vmHead(sh, cols, l1, l2) {
 }
 
 function _vmHdr(sh, row, labels) {
+  _vmFit(sh, row, labels.length);
   sh.getRange(row, 1, 1, labels.length).setValues([labels])
     .setBackground(C_LBLUE).setFontFamily('Arial').setFontWeight('bold').setFontSize(9)
     .setWrap(true).setHorizontalAlignment('center').setVerticalAlignment('middle');
@@ -210,6 +244,7 @@ function _vmHdr(sh, row, labels) {
 }
 
 function _vmBand(sh, row, cols, text) {
+  _vmFit(sh, row, cols);
   sh.getRange(row, 1, 1, cols).merge().setValue('  ' + text)
     .setBackground(C_PURPLE).setFontColor('#FFFFFF').setFontFamily('Arial')
     .setFontWeight('bold').setFontSize(10).setVerticalAlignment('middle');
@@ -217,6 +252,7 @@ function _vmBand(sh, row, cols, text) {
 }
 
 function _vmNote(sh, row, cols, text) {
+  _vmFit(sh, row, cols);
   sh.getRange(row, 1, 1, cols).merge().setValue(text).setWrap(true)
     .setFontFamily('Arial').setFontSize(9).setFontColor(C_MUTED).setVerticalAlignment('top');
 }
@@ -227,6 +263,16 @@ function _vmLocal(ss, m) {
   var NC = 13;
   var W = [70, 150, 190, 116, 52, 176, 104, 84, 78, 90, 126, 100, 92];
   for (var i = 0; i < W.length; i++) sh.setColumnWidth(i + 1, W[i]);
+  /* Fit the whole tab before writing a single cell. This is the tab that overflowed: one row per
+     local trip, per contract, plus ~24 rows of vehicle table, totals, projection and notes each. */
+  var _need = 8;
+  m.contracts.forEach(function (c) {
+    _need += (c.vehicles || []).length + 24
+           + (c.allTrips || []).filter(function (x) { return x.type !== 'Adhoc'; }).length
+           + ((c.repls || []).length) + ((c.unattr || []).length);
+  });
+  _vmFit(sh, _need, NC);
+
   _vmHead(sh, NC, m.vendorName + '  ·  Local trips — grouped KM against the contract slab',
           'Contract period ' + m.periodLabel + '   ·   only these KM count towards the slab');
 
@@ -243,7 +289,8 @@ function _vmLocal(ss, m) {
               v.slab ? (v.effKm / v.slab) : '', v.trips,
               v.foldN ? ('includes ' + v.foldN + ' replacement trip' + (v.foldN > 1 ? 's' : '')) : ''];
     });
-    if (vBody.length) sh.getRange(r, 1, vBody.length, 9).setValues(vBody).setFontFamily('Arial').setFontSize(10);
+    if (vBody.length) { _vmFit(sh, r + vBody.length, 9);
+      sh.getRange(r, 1, vBody.length, 9).setValues(vBody).setFontFamily('Arial').setFontSize(10); }
     r += vBody.length;
     c.repls.forEach(function (x) {
       sh.getRange(r, 2).setValue(x.no).setFontColor('#808080');
@@ -293,6 +340,7 @@ function _vmLocal(ss, m) {
       return [x.date, x.id, x.no, x.size, x.route, x.challan, x.type, x.km,
               x.countedTo, x.completed, x.status];
     });
+    _vmFit(sh, r + tBody.length + 4, NC);
     sh.getRange(r, 1, tBody.length, 11).setValues(tBody).setFontFamily('Arial').setFontSize(10);
     sh.getRange(r, 8, tBody.length, 1).setNumberFormat(FMT_KM);
     t.forEach(function (x, i) {
@@ -361,7 +409,9 @@ function _vmZonal(ss, m) {
                 z.rfq || (_low(z.billing) === 'adhoc' ? 'Zonal adhoc' : '(no RFQ id)'), z.challan || '',
                 z.billing + (z.rto ? ' · RTO' : ''), z.status || '', z.amt || 0];
       });
-    sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
+    _vmFit(sh, r + body.length + 4, NC);
+    _vmFit(sh, r + body.length + 24, NC);
+  sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
     sh.getRange(r, 10, body.length, 1).setNumberFormat(FMT_MONEY);
     g.forEach(function (z, i) {
       if (z.rto) sh.getRange(r + i, 8).setFontColor('#9C0006');
@@ -382,7 +432,8 @@ function _vmZonal(ss, m) {
   r += 2;
   _vmNote(sh, r, NC, 'A zonal trip has no contract ID \u2014 its RFQ ID is the contract reference, and '
     + 'each trip is paid a fixed amount from that RFQ. Zonal KM is not added to any contract KM slab. '
-    + 'An RTO zonal trip is shown for your records and is not payable.');
+    + 'A zonal Regular trip that is RTO-only is shown for your records and is not payable; a zonal '
+    + 'Adhoc trip is paid its trip amount even when the challan is RTO-only.');
   sh.setFrozenRows(4);
 }
 
@@ -415,6 +466,7 @@ function _vmAdhoc(ss, m) {
   if (!rows.length) { _vmNote(sh, r, NC, 'no adhoc trips in this period'); sh.setFrozenRows(4); return; }
 
   var body = rows.map(function (x) { return x.slice(0, NC); });
+  _vmFit(sh, r + body.length + 6, NC);
   sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
   sh.getRange(r, 8, body.length, 1).setNumberFormat(FMT_MONEY);
   rows.forEach(function (x, i) {
@@ -428,15 +480,17 @@ function _vmAdhoc(ss, m) {
   sh.getRange(r, 1, 1, NC).setBackground(C_GREEN);
   r += 2;
   _vmNote(sh, r, NC, 'Adhoc trips are paid per trip and do not contribute KM to the contract slab. '
-    + 'Quote the Trip id when raising a dispute on the panel.');
+    + 'An adhoc trip is paid its trip amount even when the challan type is RTO-only \u2014 that is the '
+    + 'rule from 08 Sep 2026, so an RTO row here is not an error. Quote the Trip id when raising a '
+    + 'dispute on the panel.');
   sh.setFrozenRows(4);
 }
 
 /* ---------- SUMMARY: the final amount ---------- */
 function _vmSummary(ss, m) {
   var sh = ss.insertSheet('Summary');
-  var NC = 12;
-  var W = [250, 88, 86, 92, 78, 74, 92, 96, 96, 96, 96, 112];
+  var NC = 13;   /* 12 + the Placement failure deduction column (2026-09-04) */
+  var W = [250, 88, 86, 92, 78, 74, 92, 96, 96, 104, 96, 96, 112];
   for (var i = 0; i < W.length; i++) sh.setColumnWidth(i + 1, W[i]);
   _vmHead(sh, NC, m.vendorName + '  ·  Billing Summary',
           'Contract period ' + m.periodLabel + '   ·   issued ' + m.generatedAt);
@@ -453,16 +507,17 @@ function _vmSummary(ss, m) {
 
   var r = 5;
   _vmHdr(sh, r, ['Contract', 'Vehicle size', 'Contracted vehicles', 'Grouped KM slab', 'KM run',
-                 'Excess KM', 'Rate / extra KM', 'Excess amount', 'Fixed amount', 'Adhoc amount',
+                 'Excess KM', 'Rate / extra KM', 'Excess amount', 'Fixed amount',
+                 'Placement failure', 'Adhoc amount',
                  'Zonal amount', 'Total payable']); r++;
   var first = r, body = [];
   m.contracts.forEach(function (c) {
     body.push([c.cid, c.size, c.nvehCV, c.slabCV, Math.round(c.regKm), Math.round(c.excessKm),
-               c.exRate, c.excessAmt, c.fixedCV, c.adhocAmt, 0,
-               c.excessAmt + c.fixedCV + c.adhocAmt]);
+               c.exRate, c.excessAmt, c.fixedCV, -(c.pfAmt || 0), c.adhocAmt, 0,
+               c.excessAmt + c.fixedCV - (c.pfAmt || 0) + c.adhocAmt]);
   });
   if (m.bucket && m.bucket.adhocAmt) {
-    body.push(['Other adhoc trips (no contract)', '—', '', '', '', '', '', 0, 0,
+    body.push(['Other adhoc trips (no contract)', '—', '', '', '', '', '', 0, 0, 0,
                m.bucket.adhocAmt, 0, m.bucket.adhocAmt]);
   }
   /* Zonal: one line PER RFQ ID, then a Zonal subtotal. The rfq_id is the contract reference for a
@@ -476,16 +531,16 @@ function _vmSummary(ss, m) {
         ? ('Zonal adhoc trips  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's')
            + ', billed on amount (no RFQ rate applies)')
         : ('Zonal RFQ  ' + g.rfq + '  \u2014  ' + g.trips + ' trip' + (g.trips === 1 ? '' : 's'));
-      body.push([label, '\u2014', '', '', '', '', '', 0, 0, 0, g.amt, g.amt]);
+      body.push([label, '\u2014', '', '', '', '', '', 0, 0, 0, 0, g.amt, g.amt]);
     });
     var _nRfq = zGroups.filter(function (g) { return !g.isAdhoc; }).length;
     body.push(['Zonal subtotal \u2014 ' + m.totals.zonalTrips + ' trip(s) across ' + _nRfq
                + ' RFQ' + (_nRfq === 1 ? '' : 's')
                + (zGroups.length > _nRfq ? ' plus adhoc' : ''),
-               '\u2014', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
+               '\u2014', '', '', '', '', '', 0, 0, 0, 0, zTot, zTot]);
   } else if (zTot) {
     body.push(['Zonal trips \u2014 ' + m.totals.zonalTrips + ' trip(s), fixed amount per trip from the RFQ',
-               '\u2014', '', '', '', '', '', 0, 0, 0, zTot, zTot]);
+               '\u2014', '', '', '', '', '', 0, 0, 0, 0, zTot, zTot]);
   }
   sh.getRange(r, 1, body.length, NC).setValues(body).setFontFamily('Arial').setFontSize(10);
   r += body.length;
@@ -495,7 +550,7 @@ function _vmSummary(ss, m) {
      and tinted so it reads as a subtotal. Without this, zonal would be counted twice. */
   var _zSubRow = zGroups.length ? last : 0;
   sh.getRange(r, 1).setValue('TOTAL PAYABLE').setFontSize(12).setFontWeight('bold');
-  [4, 5, 6, 8, 9, 10, 11, 12].forEach(function (col) {
+  [4, 5, 6, 8, 9, 10, 11, 12, 13].forEach(function (col) {
     var L = String.fromCharCode(64 + col);
     var _end = _zSubRow ? (_zSubRow - 1) : last;
     sh.getRange(r, col).setFormula('=SUM(' + L + first + ':' + L + _end + ')')
@@ -505,12 +560,13 @@ function _vmSummary(ss, m) {
   sh.getRange(r, 1, 1, NC).setBackground(C_GREEN);
   sh.getRange(first, 4, last - first + 2, 3).setNumberFormat(FMT_KM);
   sh.getRange(first, 7, last - first + 2, 1).setNumberFormat('0.00');
-  sh.getRange(first, 8, last - first + 2, 5).setNumberFormat(FMT_MONEY);
+  sh.getRange(first, 8, last - first + 2, 6).setNumberFormat(FMT_MONEY);
   r += 2;
 
   var pend = Math.round(m.totals.pendKm), pendAmt = Math.round(m.totals.adhocPend);
   var notes = ['How this is calculated',
     '•  Fixed amount is the contracted monthly value for the vehicles on the contract.',
+    '•  Placement failure is a deduction: contracted vehicle-days on which no vehicle was placed. It is taken at the contract\u2019s own day rate, so you are paid for the days actually worked \u2014 nothing further is charged on top. Every day counted is listed on the Placement Failure tab.',
     '•  KM from all your regular trips is pooled across the whole contract and compared with the grouped KM slab. Extra KM is charged only if the CONTRACT total goes above its slab — never vehicle by vehicle. See the Local tab.',
     '•  Adhoc trips are paid at a fixed amount per trip and sit outside the KM slab. See the Adhoc tab.',
     '•  Zonal trips have no contract ID — the RFQ ID is the contract reference. Each zonal trip is paid a fixed amount from its RFQ and its KM is not added to any slab. Each RFQ is its own line above; see the Zonal tab for the trips.',
@@ -543,6 +599,204 @@ function _vmSummary(ss, m) {
  * Read every source tab EXACTLY ONCE and index it. Everything downstream works off this object,
  * so a full MIS run costs 3 tab reads regardless of how many vendors or contracts there are.
  */
+/* ==================================================================================================
+ * PLACEMENT FAILURE  ->  a deduction line on the vendor's MIS          (added 2026-09-04)
+ *
+ * WHAT THIS IS, AND WHAT IT IS NOT.
+ * A placement failure is a contracted vehicle-day the vendor did not honour. The MIS shows the full
+ * period value, then this as a visible "less: placement failure" line, netting to what is actually
+ * owed. It is the PRO-RATING MADE VISIBLE, not a second charge on top of it: active_days and
+ * monthly_rate are left exactly as they are, and this line is the only reduction. Doing both would
+ * charge a vendor twice for the same day — on Bharat's 5 failures that is Rs 18,000 vs Rs 9,000.
+ *
+ * THE DAY RATE IS NOT A NEW NUMBER.  monthly_rate is already the value for the contract's
+ * active_days, so the day rate is monthly_rate / active_days — which is arithmetically identical to
+ * tier / 30, the convention the engine already prices everything on. Verified on live data:
+ *   8 FT @1500: 27000/15 = 1800.00   and   54000/30 = 1800.00
+ *   7 FT @1200: 18800/12 = 1566.67   and   47000/30 = 1566.67
+ * So there is nothing to agree about the basis. Both routes give the same rupee.
+ *
+ * HOW A ROW FINDS ITS CONTRACT.  (oracle, vehicle_size, hours_slab) picks the contract; the row's
+ * pegged_km_slab must then exist on at least one of its vehicles, and trip_date must sit inside the
+ * contract window. Anything that does not resolve to EXACTLY ONE contract is refused, not guessed —
+ * see the gates. Sizes are normalised because Contract_Info holds "7 FT" while LH type "7FT".
+ * ============================================================================================== */
+function _pfKey(v) { return _low(_s(v)).replace(/\s+/g, ''); }   // "7 FT" and "7FT" are one thing
+
+/* Strict date reader for this tab, and it is strict on purpose.
+ * _toDate() mis-reads dd-mm-yyyy text as mm-dd-yyyy whenever the day is 12 or less, and returns null
+ * when it is 13 or more. That has now cost us three separate incidents. On a tab that moves money, a
+ * silently wrong month is far worse than a refused row, so dd-mm-yyyy TEXT is named and rejected
+ * rather than parsed. Real date cells and yyyy-mm-dd text are accepted. */
+function _pfDate(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return { d: v, err: '' };
+  var t = _s(v);
+  if (!t) return { d: null, err: 'trip_date is blank' };
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+    var d1 = new Date(t.slice(0, 10) + 'T00:00:00');
+    return isNaN(d1.getTime()) ? { d: null, err: 'trip_date "' + t + '" is not a real date' }
+                               : { d: d1, err: '' };
+  }
+  if (/^\d{1,2}[-\/]\d{1,2}[-\/]\d{4}$/.test(t)) {
+    return { d: null, err: 'trip_date "' + t + '" is dd-mm-yyyy TEXT. Retype it as a real date cell '
+      + '(or as yyyy-mm-dd) — read as text the month would be silently wrong whenever the day is 12 '
+      + 'or less.' };
+  }
+  return { d: null, err: 'trip_date "' + t + '" is not a date this tab accepts' };
+}
+
+/* The live tab is spelled "Placement failure" with a lower-case f, and LH filled it with their own
+ * column names (Oracle ID, FT Size, Slab, Hr) rather than the schema's. Both are accepted, because a
+ * name mismatch here does not error — it reads as ZERO placement failures and silently pays a vendor
+ * for days they did not work. On the first live tab that was Rs 31,533 that would have gone unnoticed.
+ * getSheetByName is case-SENSITIVE, so the tab is resolved by scanning the sheet list instead. */
+function _pfResolveTab() {
+  var want = _low(TABS.placementFailure);
+  var names = [];
+  try { names = _ss().getSheets().map(function (sh) { return sh.getName(); }); } catch (e) { names = []; }
+
+  /* Where the sheet list is not available — a test harness, or a restricted context — fall back to
+     the canonical name and let _readTab answer. "Could not enumerate" must never be reported as
+     "the tab is missing": that is the difference between an unknown and a claim, and the claim here
+     silently zeroes a deduction. */
+  if (!names.length) return { name: TABS.placementFailure, seen: [], enumerated: false };
+
+  for (var i = 0; i < names.length; i++) {
+    if (_low(names[i]) === want) return { name: names[i], seen: names, enumerated: true };
+  }
+  /* accept any tab whose name starts "placement", so "Placement failure" (the live spelling, with a
+     lower-case f), "Placement Failures" or "Placement failure Aug" all bill rather than reading as
+     nothing at all */
+  for (var j = 0; j < names.length; j++) {
+    if (_low(names[j]).indexOf('placement') === 0) return { name: names[j], seen: names, enumerated: true };
+  }
+  return { name: null, seen: names, enumerated: true };
+}
+
+/* Column aliases: schema name -> the other spellings seen in the live tab. Header matching is by
+   name, so without this every field reads blank and all 21 rows refuse for the wrong reason. */
+var PF_ALIAS = {
+  trip_date:        ['trip_date', 'Trip Date', 'Date'],
+  vendor_oracle_id: ['vendor_oracle_id', 'Oracle ID', 'oracle_id', 'Oracle Id'],
+  vendor_name:      ['vendor_name', 'Vendor name2', 'Vendor Name', 'Vendor'],
+  vehicle_size:     ['vehicle_size', 'FT Size', 'ft_size', 'Size'],
+  pegged_km_slab:   ['pegged_km_slab', 'Slab', 'slab', 'KM Slab'],
+  hours_slab:       ['hours_slab', 'Hr', 'Hrs', 'Hours', 'hours'],
+  vehicles_failed:  ['vehicles_failed', 'Vehicles', 'Count', 'No of vehicles'],
+  remarks:          ['remarks', 'Remarks', 'Reason'],
+  recorded_by:      ['recorded_by', 'Recorded by'],
+};
+function _pfGet(row, field) {
+  var alts = PF_ALIAS[field] || [field];
+  /* exact first, then case-insensitively, so "oracle id" and "Oracle ID" both land */
+  for (var i = 0; i < alts.length; i++) if (row[alts[i]] !== undefined && _s(row[alts[i]]) !== '') return row[alts[i]];
+  var keys = Object.keys(row);
+  for (var a = 0; a < alts.length; a++) {
+    var t = _low(alts[a]).replace(/[\s_]+/g, '');
+    for (var k = 0; k < keys.length; k++) {
+      if (_low(keys[k]).replace(/[\s_]+/g, '') === t && _s(row[keys[k]]) !== '') return row[keys[k]];
+    }
+  }
+  return '';
+}
+
+function _misReadPlacementFailures(info, vehs) {
+  /* The tab may not exist yet — it arrives with "1 · Create / verify tabs", and the billing engine has
+     to keep working in the meantime rather than dying on a missing sheet. A genuinely absent tab means
+     no placement failures; it is reported as a WARN so nobody mistakes "not wired up" for "none". */
+  var t = _pfResolveTab();
+  var rows = [];
+  var tabMissing = !t.name;
+  if (t.name) { try { rows = _readTab(t.name, 'trip_date') || []; } catch (e) { rows = []; } }
+  var res = { byContract: {}, byOracle: {}, unresolved: [], dupes: [], overCap: [],
+              rowCount: rows.length, days: 0, amount: 0,
+              tabName: t.name || '', tabMissing: tabMissing, tabsSeen: t.seen || [] };
+
+  /* index the masters once: (oracle|size|hours) -> [contract rows] */
+  var idx = {};
+  Object.keys(info).forEach(function (cid) {
+    var c = info[cid];
+    var k = _pfKey(c.vendor_oracle_id) + '|' + _pfKey(c.vehicle_size) + '|' + _pfKey(c.hours_slab);
+    (idx[k] = idx[k] || []).push(cid);
+  });
+
+  var seen = {};
+  rows.forEach(function (r, i) {
+    var rowNo = i + 2;                                          // 1-based, past the header
+    var o = _s(_pfGet(r, 'vendor_oracle_id')), sz = _s(_pfGet(r, 'vehicle_size'));
+    var hr = _s(_pfGet(r, 'hours_slab'));
+    var slab = _num(_pfGet(r, 'pegged_km_slab'));
+    var _vf = _s(_pfGet(r, 'vehicles_failed'));
+    var n = _vf === '' ? 1 : _num(_vf);
+    var _rawDate = _pfGet(r, 'trip_date');
+    var bad = function (why) { res.unresolved.push({ rowNo: rowNo, date: _s(_rawDate), oracle: o,
+                                 size: sz, slab: slab, hours: hr, n: n, why: why }); };
+
+    if (!o)   return bad('vendor_oracle_id is blank');
+    if (!sz)  return bad('vehicle_size is blank');
+    if (!hr)  return bad('hours_slab is blank — a 7 FT / 1500 km row cannot be priced without it, '
+                         + 'because 12hr and 24hr contracts of the same size can both match');
+    if (!slab) return bad('pegged_km_slab is blank or zero');
+    if (!(n > 0)) return bad('vehicles_failed must be a positive number');
+
+    var dt = _pfDate(_rawDate);
+    if (!dt.d) return bad(dt.err);
+
+    var cands = idx[_pfKey(o) + '|' + _pfKey(sz) + '|' + _pfKey(hr)] || [];
+    if (!cands.length) return bad('no contract for oracle ' + o + ' / ' + sz + ' / ' + hr);
+
+    /* narrow by the slab existing on a vehicle, and by the date sitting in the contract window */
+    var hits = [];
+    cands.forEach(function (cid) {
+      var c = info[cid];
+      var st = _toDate(c.contract_start_date), en = _toDate(c.contract_end_date);
+      if (!st || !en) return;
+      if (dt.d < st || dt.d > en) return;
+      var vs = (vehs[cid] || []).filter(function (v) { return Math.abs(_num(v.pegged_km_slab) - slab) < 0.5; });
+      if (!vs.length) return;
+      hits.push({ cid: cid, vs: vs });
+    });
+    if (!hits.length) return bad('no contract on (oracle ' + o + ', ' + sz + ', ' + hr + ', ' + slab
+      + ' km) whose window covers ' + Utilities.formatDate(dt.d, _tz(), 'yyyy-MM-dd'));
+    if (hits.length > 1) return bad('AMBIGUOUS — matches ' + hits.map(function (h) { return h.cid; }).join(' and '));
+
+    var hit = hits[0], cid = hit.cid;
+    /* every vehicle on the same slab in one contract should carry the same rate and days; if not,
+       the masters are inconsistent and we refuse rather than pick one */
+    var rates = {}, dayss = {};
+    hit.vs.forEach(function (v) { rates[_num(v.monthly_rate)] = 1; dayss[_num(v.active_days)] = 1; });
+    if (Object.keys(rates).length > 1 || Object.keys(dayss).length > 1) {
+      return bad('vehicles at ' + slab + ' km on ' + cid + ' disagree on monthly_rate or active_days, '
+        + 'so there is no single day rate to deduct');
+    }
+    var mr = _num(hit.vs[0].monthly_rate), ad = _num(hit.vs[0].active_days);
+    if (!(ad > 0)) return bad('active_days is 0 on ' + cid + ' — cannot derive a day rate');
+
+    var key = cid + '|' + Utilities.formatDate(dt.d, _tz(), 'yyyy-MM-dd') + '|' + slab;
+    if (seen[key]) { res.dupes.push(key + ' (rows ' + seen[key] + ' and ' + rowNo + ')'); }
+    else seen[key] = rowNo;
+
+    var dayRate = mr / ad, amt = dayRate * n;
+    var b = res.byContract[cid] = res.byContract[cid]
+      || { days: 0, amount: 0, rows: [], avail: (vehs[cid] || []).length * ad };
+    b.days += n; b.amount += amt;
+    b.rows.push({ rowNo: rowNo, date: Utilities.formatDate(dt.d, _tz(), 'yyyy-MM-dd'), size: sz,
+                  slab: slab, hours: hr, n: n, dayRate: dayRate, amount: amt,
+                  remarks: _s(_pfGet(r, 'remarks')) });
+    var ok = _s(info[cid].vendor_oracle_id);
+    var ob = res.byOracle[ok] = res.byOracle[ok] || { days: 0, amount: 0 };
+    ob.days += n; ob.amount += amt;
+    res.days += n; res.amount += amt;
+  });
+
+  /* a vendor cannot fail more vehicle-days than the contract has to give */
+  Object.keys(res.byContract).forEach(function (cid) {
+    var b = res.byContract[cid];
+    if (b.days > b.avail) res.overCap.push(cid + ' (' + b.days + ' failed vs ' + b.avail + ' available)');
+  });
+  return res;
+}
+
 function _misReadSource() {
   var ci = _readTab(TABS.contractInfo,     'contract_id');
   var cv = _readTab(TABS.contractVehicles, 'contract_id');
@@ -635,7 +889,9 @@ function _misReadSource() {
 
   return { info: info, byOracle: byOracle, orcKey: orcKey, vehs: vehs, defSet: defSet,
            plateHome: plateHome, trips: trips, orphans: orphans,
-           zonal: zonal, zonalOrphans: zonalOrphans };
+           zonal: zonal, zonalOrphans: zonalOrphans,
+           /* read once here, like zonal, so the model and the gates cannot disagree about it */
+           pf: _misReadPlacementFailures(info, vehs) };
 }
 
 function _misZonalEmpty() { return { regN: 0, regAmt: 0, adhocN: 0, adhocAmt: 0, rows: [], rfqGroups: [] }; }
@@ -826,6 +1082,7 @@ function buildBillingModel(oracle, d) {
       return { no: no, ownKm: ownKm[no] || 0, trips: tripsN[no] || 0 };
     });
 
+    var _pf = (d.pf && d.pf.byContract[cid]) || { days: 0, amount: 0, rows: [] };
     var slabCI  = _num(c.total_km_slab);
     var fixedCI = _num(c.fixed_monthly_value);
     var exRate  = _num(c.ex_km_rate);
@@ -841,7 +1098,10 @@ function buildBillingModel(oracle, d) {
       slabCV: slabCV, slabCI: slabCI, fixedCV: fixedCV, fixedCI: fixedCI, exRate: exRate,
       regKm: regKm, pendKm: pendKm, excessKm: excessKm, excessAmt: excessKm * exRate,
       adhocAmt: adhocAmt, adhocPend: adhocPend,
-      localPayable: fixedCV + excessKm * exRate,
+      /* Placement failure is a DEDUCTION from the fixed value, and the only reduction applied.
+         fixedCV stays the full period value so the MIS can show "full, less this, net". */
+      pfDays: _pf.days, pfAmt: _pf.amount, pfRows: _pf.rows,
+      localPayable: fixedCV - _pf.amount + excessKm * exRate,
       projKm: cpf.projected, projPct: cpf.projPct, sizing: cpf.sizing,
       vehicles: vehicles, repls: repls, unattr: unattr, allTrips: allTrips,
       adhocTrips: adhocTrips, rtoTrips: rtoTrips,
@@ -883,10 +1143,12 @@ function buildBillingModel(oracle, d) {
 
 function _misTotals(m) {
   var t = { slab: 0, regKm: 0, pendKm: 0, excessKm: 0, excessAmt: 0, fixed: 0,
+            pfDays: 0, pfAmt: 0,
             adhoc: 0, adhocPend: 0, zonal: 0, zonalTrips: 0, unattrKm: 0, payable: 0 };
   m.contracts.forEach(function (c) {
     t.slab += c.slabCV; t.regKm += c.regKm; t.pendKm += c.pendKm;
     t.excessKm += c.excessKm; t.excessAmt += c.excessAmt; t.fixed += c.fixedCV;
+    t.pfDays += (c.pfDays || 0); t.pfAmt += (c.pfAmt || 0);
     t.adhoc += c.adhocAmt; t.adhocPend += c.adhocPend; t.unattrKm += c.unattrKm;
   });
   if (m.bucket) t.adhoc += m.bucket.adhocAmt;
@@ -894,7 +1156,9 @@ function _misTotals(m) {
      no contract_id, so there is no per-contract figure to prefer and no double-count to guard. */
   t.zonal      = (m.zonal.regAmt || 0) + (m.zonal.adhocAmt || 0);
   t.zonalTrips = (m.zonal.rows || []).length;
-  t.payable = t.fixed + t.excessAmt + t.adhoc + t.zonal;
+  /* Placement failure comes OFF the fixed value. It is subtracted exactly once, here and in
+     localPayable — never also by trimming active_days, which would charge the day twice. */
+  t.payable = t.fixed - t.pfAmt + t.excessAmt + t.adhoc + t.zonal;
   return t;
 }
 
@@ -986,6 +1250,60 @@ function runGates(model, d) {
     if (Math.abs(c.fixedCV - c.fixedCI) > 0.5) bad.push(c.cid + ' (Σ ' + c.fixedCV + ' vs CI ' + c.fixedCI + ')');
   });
   add('Σ monthly_rate = Contract_Info.fixed_monthly_value', !bad.length, bad.join('; '));
+
+  /* ---- Placement Failure: three BLOCK gates. A row that cannot be priced must stop the MIS, not
+     quietly deduct nothing — an unpenalised no-show and a mistyped row look identical otherwise. ---- */
+  var _p = d.pf || { unresolved: [], dupes: [], overCap: [], rowCount: 0, days: 0, amount: 0 };
+
+  /* SCOPED TO THIS VENDOR, deliberately.
+   * A first cut reported every unresolved row to every vendor, which blocked all 17 MIS files because
+   * one Buraq row was missing its hours — including Rajkot vendors with no placement failures at all.
+   * One vendor's typo must not hold another vendor's payment. A row whose oracle cannot be read at
+   * all is shown to everyone, because there is no way to know whose it is. */
+  var _mine = _p.unresolved.filter(function (u) {
+    return !u.oracle || _misOrcKey(u.oracle) === _misOrcKey(model.oracle);
+  });
+  add('Every Placement Failure row resolves to one contract', !_mine.length,
+      _mine.length
+        ? (_mine.length + ' row(s) for this vendor cannot be priced'
+           + (_p.unresolved.length > _mine.length
+              ? (' (' + _p.unresolved.length + ' across all vendors)') : '') + ': '
+           + _mine.slice(0, 6).map(function (u) {
+               return 'row ' + u.rowNo + ' (' + u.oracle + '/' + u.size + '/' + u.slab + 'km) ' + u.why;
+             }).join(' | ') + (_mine.length > 6 ? ' | …' : ''))
+        : '');
+  add('Placement Failure tab is present', !_p.tabMissing,
+      _p.tabMissing ? ('no tab matching "' + TABS.placementFailure + '" was found, so ZERO placement '
+        + 'failures were deducted. If that is wrong, check the tab name. Tabs seen: '
+        + (_p.tabsSeen || []).join(', ')) : '', 'WARN');
+  /* both keyed on contract_id, so filter to the contracts this vendor actually holds */
+  var _myCids = {};
+  model.contracts.forEach(function (c) { _myCids[c.cid] = 1; });
+  var _mineIs = function (txt) { return Object.keys(_myCids).some(function (cid) { return txt.indexOf(cid) === 0; }); };
+  var _myDupes = _p.dupes.filter(_mineIs), _myCap = _p.overCap.filter(_mineIs);
+  add('No duplicate Placement Failure entry', !_myDupes.length,
+      _myDupes.length ? (_myDupes.length + ' duplicate key(s) — use vehicles_failed instead of '
+        + 'repeating a row: ' + _myDupes.slice(0, 6).join('; ')) : '');
+  add('Placement failure days within the vehicle-days available', !_myCap.length,
+      _myCap.length ? ('more days failed than the contract has: ' + _myCap.join('; ')) : '');
+
+  /* The MIS period is min(contract_start)..max(contract_end) across this vendor's contracts — there
+   * is no month selector. So the moment a vendor holds contracts in two different months at once
+   * (add a September one while August is still Active), their MIS silently covers BOTH and one
+   * invoice carries two months of money. No vendor spans two months today; this is here so the first
+   * one that does is noticed rather than paid. */
+  var _months = {};
+  model.contracts.forEach(function (c) {
+    var a = _toDate(c.start), b = _toDate(c.end);
+    if (a) _months[a.getFullYear() + '-' + (a.getMonth() + 1)] = 1;
+    if (b) _months[b.getFullYear() + '-' + (b.getMonth() + 1)] = 1;
+  });
+  var _mk = Object.keys(_months);
+  add('Contract period sits inside one month', _mk.length <= 1,
+      _mk.length > 1 ? ('this vendor holds contracts across ' + _mk.length + ' months ('
+        + _mk.sort().join(', ') + '), and the MIS has no month selector — the period is '
+        + model.periodLabel + ', so ONE file would carry all of it. Bill the months separately.') : '',
+      'WARN');
 
   var un = 0, unKm = 0;
   model.contracts.forEach(function (c) { un += c.unattr.length; unKm += c.unattrKm; });
@@ -1191,6 +1509,7 @@ function _misWriteCostViewAll(mis, d) {
 
   var r = 4, first = r;
   if (!rowsOut.length) { _misNote(sh, r, 2, 'no contracts found'); return; }
+  _vmFit(sh, r + rowsOut.length + 8, 18);
   sh.getRange(r, 1, rowsOut.length, 18).setValues(rowsOut).setFontFamily('Arial').setFontSize(10);
   for (var i = 0; i < rowsOut.length; i++) {
     var rr = r + i;
@@ -1344,6 +1663,7 @@ function _misExcBlock(sh, r, title, hdrs, rows, tint) {
       .setFontWeight('bold').setFontColor('#006100').setBackground(C_GREEN);
     return r + 3;
   }
+  _vmFit(sh, r + rows.length + 6, 9);
   sh.getRange(r, 1, rows.length, 9).setValues(rows).setFontSize(10).setWrap(true);
   sh.getRange(r, 6, rows.length, 1).setNumberFormat(FMT_KM);
   sh.getRange(r, 2, rows.length, 8).setBackground(tint);

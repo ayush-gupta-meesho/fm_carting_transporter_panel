@@ -23,7 +23,11 @@ var TABS = {
   contractVehicles: 'Contract_Vehicles',
   tripLevel:        'Trip_Level',
   nodeMap:          'Node_Cluster_Map',
-  accessControl:    'Access_Control'   // 9th tab — the login/scoping table (NEW vs R1)
+  accessControl:    'Access_Control',  // 9th tab — the login/scoping table (NEW vs R1)
+  /* Placement Failure — contracted vehicle-days the vendor did not honour. LH fill it; the billing
+     engine reads it and turns each row into a deduction line on that vendor's MIS. The tab name has a
+     SPACE in it, matching what LH already call it. (2026-09-04) */
+  placementFailure: 'Placement Failure'
 };
 
 var OTP_TTL_SECONDS      = 600;      // OTP valid for 10 minutes
@@ -380,8 +384,21 @@ function _classifyTrip(t, defSet, defaultBilling) {
   var amtSys   = _num(t.adhoc_amount);
   var amtRes   = _s(t.adhoc_amount_resolved);
   var adhocAmt = amtRes !== '' ? _num(amtRes) : amtSys;
-  // ONE RTO RULE: an RTO trip pays nothing, whatever its scope or billing type. Confirmed 2026-08-07.
-  var payable  = rto ? 0 : (isAdhoc ? adhocAmt : (isZonal ? zonalAmt : 0));
+  /* THE RTO RULE, TWO PARTS  (2026-09-08 — this REPLACES the old blanket "an RTO trip pays nothing")
+   *
+   *   REGULAR, either scope, replacement included  ->  pays NOTHING, and its KM reaches no slab.
+   *        A replacement row is a Regular row, so it is covered by this arm without a special case.
+   *   ADHOC, either scope                          ->  IS PAID, at the adhoc amount the row carries.
+   *        An RTO-only adhoc run is still a vehicle hired for a job, so it earns its trip amount.
+   *
+   * Why it changed: adhoc RTO used to be zero, and ops were lifting the RTO marking through dispute
+   * resolution to get such trips paid. That workaround is what put a rupee figure into
+   * challan_type_final on four Pune Logistics rows on 03 Sep. Paying it by rule removes the need for
+   * the dispute, so the challan column stops being used as a payment switch.
+   *
+   * kmToSlab below is deliberately untouched: adhoc KM never reached a grouped slab, RTO or not.
+   * Order matters — isAdhoc is tested BEFORE rto, which is the whole of the change. */
+  var payable  = isAdhoc ? adhocAmt : (rto ? 0 : (isZonal ? zonalAmt : 0));
   // Only Local + Regular + non-RTO KM ever reaches the grouped KM slab.
   var kmToSlab = (!isZonal && !isAdhoc && !rto);
 
@@ -558,6 +575,11 @@ function _buildVendorPayload(oracle, opts) {
         // always true there. On the ADMIN payload (allTrips) it is the ONLY way to tell a trip that
         // has been transferred from one that has not — vendor_status reads 'Pending' for both.
         sent:      _yes(t.sent_to_vendor_flag),
+        /* admin only, and only on an untransferred trip: why the scheduled run is holding it back.
+           Without this the admin sees "Not yet sent" on a trip that is being held DELIBERATELY and on
+           one that is merely inside its ground window, with nothing to tell them apart. */
+        hold:      _yes(t.sent_to_vendor_flag) ? undefined
+                     : ((typeof _holdFromVendor === 'function') ? (_holdFromVendor(t) || undefined) : undefined),
         disp:      dmap[_s(t.trip_id)] || null
       };
     });
@@ -788,6 +810,16 @@ function _buildRoute(t) {
 var TAB_SCHEMA = {
     'Contract_Info': ['contract_id','vendor_oracle_id','vendor_name','cluster','vehicle_size','hours_slab','no_of_vehicles','total_km_slab','fixed_monthly_value','ex_km_rate','contract_start_date','contract_end_date','contract_status'],
     'Contract_Vehicles': ['contract_id','vehicle_number','day1_order','pegged_km_slab','monthly_rate','active_days','default_vehicle_id','start_date','end_date'],
+    /* Placement Failure.
+     * GRAIN: one row = one contracted vehicle-day not honoured, identified by
+     *        (trip_date, vendor_oracle_id, vehicle_size, pegged_km_slab, hours_slab).
+     * There is deliberately NO vehicle_number: which physical vehicle runs against a slot is not
+     * fixed, so LH record "on the 18th you could not put out one 7 FT / 1500 km / 12hr vehicle".
+     * hours_slab IS required — without it a 19434 / 7 FT / 1500 km row could belong to the 12hr
+     * contract (Rs 23,500 a vehicle) or the 24hr one (Rs 38,000), and the deduction differs.
+     * vehicles_failed lets two failures of the same shape on one day be ONE row with a count,
+     * instead of two identical rows nobody can tell apart from an accidental paste. */
+    'Placement Failure': ['trip_date','vendor_oracle_id','vendor_name','vehicle_size','pegged_km_slab','hours_slab','vehicles_failed','remarks','recorded_by','recorded_at'],
     'Trip_Level': ['row_id','trip_id','transporter_oracle_id','Vendor Name','contract_id','vehicle_number','vehicle_size','trip_cluster','route_scope','rfq_id','trip_date','trip_start_time','trip_end_time','source_node','dest_fmh_nodes','node_count','route_name','challan_type','total_trip_km','km_accumulated_flag','billing_type_system','adhoc_reason_system','replacement_flag_system','replaced_default_vehicle_system','zonal_rfq_amount','adhoc_amount','ground_confirmed','billing_type_final','replaced_default_vehicle_final','challan_type_final','zonal_rfq_amount_final','billing_type_resolved','Remarks','ground_review_deadline','sent_to_vendor_flag','sent_to_vendor_timestamp','vendor_status','dispute_window_end','retention_month','retention_state','total_trip_km_resolved','adhoc_amount_resolved'],
     'Node_Cluster_Map': ['node_code','cluster','node_type'],
     'Access_Control': ['email','vendor_oracle_id','vendor_name','role','cluster_scope','active'],
@@ -910,10 +942,15 @@ function onOpen() {
     .addItem('3 · Refresh panel data (sync only)', 'syncNowFromMenu')
     .addItem('4 · Apply vendor actions NOW (drain + sync)', 'drainAndSyncFromMenu')
     .addItem('5 · Import resolved disputes (CSV)', 'importResolvedDisputes')
-    .addItem('5a · Repair missed resolutions (dry run first)', 'repairMissedResolutionsFromMenu')
+    .addItem('5a · Check resolutions are in sync (read-only)', 'repairMissedResolutionsFromMenu')
     .addSeparator()
-    .addItem('6 · Turn ON auto-apply (drain + sync, 10 min)', 'createDrainSyncFromMenu')
+    .addItem('6 · Turn ON auto-apply (drain + sync, 10 min — NO filter)', 'createDrainSyncFromMenu')
     .addItem('7 · Stop auto-apply', 'stopSyncFromMenu')
+    .addSeparator()
+    .addItem('6a · Turn ON scheduled run (14:30/18:30/22:30/03:30 IST, skips Adhoc + RTO)', 'createScheduledFilteredFromMenu')
+    .addItem('6b · Run the scheduled job NOW', 'runScheduledFilteredNow')
+    .addItem('7a · Stop the scheduled run', 'stopScheduledFilteredFromMenu')
+    .addItem('7b · Show trigger status + timezone', 'showTriggerStatusFromMenu')
     .addSeparator()
     .addItem('8 · Set vehicle dropdowns on Trip_Level', 'applyReplacedVehicleValidationFromMenu')
     .addSeparator()

@@ -116,9 +116,18 @@ rtoRes2=C({route_scope:'Local',billing_type_system:'Regular',challan_type:'RTO o
            challan_type_final:'Forward Only'});
 ck(rtoRes2.kmToSlab===true&&rtoRes2.km===183,
    'lifting the RTO as well puts the RESOLVED 183 km into the slab (both levers, one resolution)');
+/* 2026-09-08: an adhoc RTO trip is payable, so a resolved amount on one is no longer inert — it is
+   the figure that gets paid. This is the KM/amount precedence and the new RTO rule meeting: the
+   resolved value wins over the system value, and the RTO marking no longer zeroes either. */
 ck(C({route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only',
-      adhoc_amount:2871.44,adhoc_amount_resolved:3200}).payable===0,
-   'and a resolved amount on an RTO adhoc trip still pays 0');
+      adhoc_amount:2871.44,adhoc_amount_resolved:3200}).payable===3200,
+   'a resolved amount on an RTO adhoc trip is what gets paid — ₹3200, not the ₹2871.44 system value');
+ck(C({route_scope:'Local',billing_type_system:'Adhoc',challan_type:'RTO only',
+      adhoc_amount:2871.44}).payable===2871.44,
+   'and with no resolution it pays the system amount rather than 0 (the arm that changed)');
+ck(C({route_scope:'Local',billing_type_system:'Regular',challan_type:'RTO only',
+      total_trip_km:180,total_trip_km_resolved:183}).payable===0,
+   'while a resolved KM on a REGULAR RTO trip still pays 0 — that arm did not change');
 
 console.log('  ── zonal has no KM slab, so a resolved KM is inert there ──');
 ck(C({route_scope:'Zonal',rfq_id:'R1',billing_type_system:'Regular',challan_type:'Forward Only',
@@ -164,7 +173,10 @@ ck(tlWrites.length===0,'a third pass writes nothing — reconciliation is idempo
 /* ==================================================================================================
  * 3. repairMissedResolutions() — cleaning up rows already lost
  * ================================================================================================= */
-console.log('\n── 3. the repair tool, on rows the old code already stamped ──');
+console.log('\n── 3. the sync CHECK (menu 5a), on rows the old code already stamped ──');
+/* 5a used to have an apply mode. It no longer does: §3b proves the applier already performs the
+   identical repair, so a second function able to write the same cells was only a second mapping that
+   could drift. 5a is now the read-only audit — "is anything out of sync, and by how much?" */
 function stampedButUnwritten(){
   /* exactly the live state: resolved_at present, resolved_km present, Trip_Level never updated,
      the vendor has already accepted */
@@ -182,55 +194,68 @@ function stampedButUnwritten(){
           resolved_at:'2026-08-21T15:57:19',resolved_by:'Sharan',resolved_km:'150',orig_total_km:'100'}]);
 }
 stampedButUnwritten();
-const dry=repairMissedResolutions(false);
-console.log('  '+dry.split('\n').slice(0,8).join('\n  '));
-ck(/DRY RUN/.test(dry),'the default call is a DRY RUN');
-ck(tlWrites.length===0,'a dry run writes not one cell');
-ck(/Rows that would change  : 2/.test(dry),'it reports both rows as needing repair');
-ck(/KM delta vs system      : 52.55/.test(dry),'and totals the KM it would restore (30-27.45 + 150-100)');
-ck(/matched on row_id/.test(dry),'DSP-B is matched via the row_id fallback (its trip_id holds the row_id)');
+const rep=repairMissedResolutions();
+console.log('  '+rep.split('\n').slice(0,7).join('\n  '));
+ck(/read-only, nothing was written/.test(rep),'it says plainly that it writes nothing');
+ck(tlWrites.length===0,'and it writes not one cell, whatever it is called with');
+ck(repairMissedResolutions(true)===rep,'passing true no longer applies anything — the mode is gone');
+ck(tlWrites.length===0,'still nothing written');
+ck(/Rows OUT OF SYNC        : 2/.test(rep),'it reports both rows as out of sync');
+ck(/run menu 4/.test(rep),'and names menu 4 as the way to apply them — one write path, not two');
+ck(/KM delta vs system      : 52.55/.test(rep),'it totals the KM at stake (30-27.45 + 150-100)');
+ck(/matched on row_id/.test(rep),'DSP-B is found via the row_id fallback (its trip_id holds the row_id)');
+ck(/18838/.test(rep),'and it names the vendor affected');
 
-const applied=repairMissedResolutions(true);
-console.log('  '+applied.split('\n')[1]+'  '+applied.split('\n')[2]);
-ck(String(tcell('T-A','total_trip_km_resolved'))==='30','the repair writes T-A');
-ck(String(tcell('T-B','total_trip_km_resolved'))==='150','and T-B, found by row_id');
-ck(String(tcell('T-A','total_trip_km'))==='27.45'&&String(tcell('T-B','total_trip_km'))==='100',
-   'neither system column is touched');
-ck(tcell('T-A','vendor_status')==='Reconfirmed'&&tcell('T-B','vendor_status')==='Reconfirmed',
-   'and NEITHER trip is reopened — the vendor accepted this correction, so applying it is the fix');
-ck(statusUpserts.length===0,'the repair never notifies anyone');
-ck(String(dcell('DSP-A','resolved_at'))==='2026-08-21T15:57:19','the original resolved_at is preserved');
-
-tlWrites=[];
-const second=repairMissedResolutions(true);
-console.log('  re-run -> '+second.split('\n')[1].trim()+' / '+second.split('\n')[4].trim());
-ck(tlWrites.length===0,'running the repair twice writes nothing the second time');
-ck(/Already correct         : 2/.test(second),'and it reports both rows as already correct');
-
-/* an Open dispute is never repaired */
-stampedButUnwritten();
-dset('DSP-A','dispute_status','Open');
-repairMissedResolutions(true);
-ck(tcell('T-A','total_trip_km_resolved')==='','an Open dispute is not repaired — Resolved is the trigger');
-ck(String(tcell('T-B','total_trip_km_resolved'))==='150','but its Resolved sibling still is');
-
-/* the columns must exist, and their absence must be LOUD rather than a silent no-op */
+/* the columns must exist, and their absence must be LOUD rather than a silent "all clear" */
 stampedButUnwritten();
 HIDE_TL_COLS=['total_trip_km_resolved'];
-const missing=repairMissedResolutions(true);
+const missing=repairMissedResolutions();
 console.log('  without the column -> '+(missing.match(/MISSING COLUMN[^\n]*/)||['(nothing)'])[0]);
 ck(/MISSING COLUMN "total_trip_km_resolved"/.test(missing),
-   'a sheet without the new column is NAMED, not silently skipped (run "1 · Create / verify tabs")');
+   'a sheet without the new column is NAMED, not reported as in sync (run "1 · Create / verify tabs")');
 
-/* zonal: resolved_km must stay ignored by the repair too */
+/* an Open dispute is never counted */
+stampedButUnwritten();
+dset('DSP-A','dispute_status','Open');
+ck(/Rows OUT OF SYNC        : 1/.test(repairMissedResolutions()),
+   'an Open dispute is not counted — Resolved is the trigger, here as everywhere');
+
+/* ==================================================================================================
+ * 3b. WHY 5a NO LONGER APPLIES — the applier already does exactly this
+ *
+ * The evidence for removing the apply mode. Same fixture, two routes, byte-compared.
+ * ================================================================================================= */
+console.log('\n── 3b. applyResolutionsFromSheet vs the old repair: identical ──');
+stampedButUnwritten();
+applyResolutionsFromSheet();
+const viaApplier=JSON.stringify(TL), applierWrites=tlWrites.map(w=>w.trip+'.'+w.col+'='+w.v).sort();
+const applierUps=statusUpserts.length;
+console.log('  applier writes: '+applierWrites.join(' | '));
+console.log('  status upserts: '+applierUps);
+ck(applierWrites.join()==='T-A.total_trip_km_resolved=30|T-B.total_trip_km_resolved=150'.split('|').sort().join(),
+   'the applier alone writes exactly the two cells the repair tool used to write');
+ck(String(tcell('T-A','total_trip_km_resolved'))==='30'&&String(tcell('T-B','total_trip_km_resolved'))==='150',
+   'landing the same values, T-B via the same row_id fallback');
+ck(String(tcell('T-A','total_trip_km'))==='27.45'&&String(tcell('T-B','total_trip_km'))==='100',
+   'without touching either system column');
+ck(tcell('T-A','vendor_status')==='Reconfirmed'&&tcell('T-B','vendor_status')==='Reconfirmed',
+   'and without reopening either accepted trip');
+ck(applierUps===0,'zero status upserts — resolved_at is already set, so nobody is re-notified');
+/* and 5a now agrees the sheet is clean */
+tlWrites=[];
+ck(/Rows OUT OF SYNC        : 0/.test(repairMissedResolutions()),
+   'after which the sync check reports 0 out of sync — the audit and the applier agree');
+ck(tlWrites.length===0,'and it still wrote nothing to say so');
+
+/* zonal: resolved_km must stay ignored on both paths */
 reset([{trip_id:'T-Z',row_id:'T-Z_R',transporter_oracle_id:'18838',route_scope:'Zonal',rfq_id:'R1',
         billing_type_system:'Regular',zonal_rfq_amount:5300,challan_type:'Forward Only',
         total_trip_km:0,vendor_status:'Reconfirmed'}],
       [{dispute_id:'DSP-Z',trip_id:'T-Z',row_id:'T-Z_R',dispute_status:'Resolved',
         resolved_at:'2026-08-21T15:57:19',resolved_km:'900',resolved_zonal_amount:'5500'}]);
-repairMissedResolutions(true);
-ck(tcell('T-Z','total_trip_km_resolved')==='','the repair ignores resolved_km on zonal, as the appliers do');
-ck(String(tcell('T-Z','zonal_rfq_amount_final'))==='5500','but it does apply the resolved zonal amount');
+applyResolutionsFromSheet();
+ck(tcell('T-Z','total_trip_km_resolved')==='','the applier ignores resolved_km on zonal');
+ck(String(tcell('T-Z','zonal_rfq_amount_final'))==='5500','but does apply the resolved zonal amount');
 
 /* ==================================================================================================
  * 4. _sameCell — the strict numeric rule. A first cut compared _num() on anything containing a digit,

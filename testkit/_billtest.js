@@ -43,8 +43,10 @@ tl.forEach(t=>{
   if(String(t.route_scope||'Local').trim().toLowerCase()!=='zonal') return;
   const rto=/^rto/i.test(String(t.challan_type_final||t.challan_type||''));
   const adhoc=String(t.billing_type_system||'').trim().toLowerCase()==='adhoc';
-  const amt=rto?0:(adhoc?Number(t.adhoc_amount||0)
-                        :Number(t.zonal_rfq_amount_final||t.zonal_rfq_amount||0));
+  /* RTO rule, 2026-09-08 two-part form: the RTO gate applies to Regular only. An adhoc trip is paid
+     its amount whether or not the challan is RTO-only. */
+  const amt=adhoc?Number(t.adhoc_amount||0)
+                 :(rto?0:Number(t.zonal_rfq_amount_final||t.zonal_rfq_amount||0));
   indep.zonal+=amt; indep.zTrips++;
   if(!String(t.contract_id||'').trim()) indep.blankCid++;
   const k=String(t.rfq_id||'').trim()||'(no RFQ id)';
@@ -137,7 +139,8 @@ function indepClass(t,defBilling){
     :(lc(t.challan_type).indexOf('rto')===0
       ||(lc(t.km_accumulated_flag)!=='yes'&&km===0&&!isAdhoc&&st(t.km_accumulated_flag)!==''));
   return {isZonal:isZonal,isAdhoc:isAdhoc,rto:rto,
-          amt:rto?0:(isAdhoc?nm(t.adhoc_amount):0)};
+          /* adhoc is tested before rto — the 2026-09-08 rule */
+          amt:isAdhoc?nm(t.adhoc_amount):0};
 }
 let indepAdhoc=0, indepAdhocN=0, indepBucket=0, indepBucketN=0;
 tl.forEach(t=>{

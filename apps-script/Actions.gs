@@ -48,6 +48,31 @@ function _ctx(tabName, keyCol) {
   var idx = {}; headers.forEach(function (h, i) { if (h) idx[h] = i; });
   return { sh: sh, values: values, headerRow: hr, headers: headers, idx: idx };
 }
+/* A one-pass index for a column, cached on the ctx.
+ * _findRowIndex is a linear scan, which was fine when applyResolutionsFromSheet stopped at the first
+ * unstamped row. It now visits EVERY Resolved dispute on every run (that is what makes it self-heal),
+ * so the cost became O(disputes x trips): 167 x 3,911 today, and both sides grow daily. This makes it
+ * O(disputes + trips). Same lookup semantics — trimmed string equality, first row wins. */
+function _rowIndexBy(ctx, col) {
+  ctx._ix = ctx._ix || {};
+  if (ctx._ix[col]) return ctx._ix[col];
+  var m = {}, ci = ctx.idx[col];
+  if (ci !== undefined) {
+    for (var i = ctx.headerRow + 1; i < ctx.values.length; i++) {
+      var k = String(ctx.values[i][ci]).trim();
+      if (k !== '' && m[k] === undefined) m[k] = i;      // first row wins, as _findRowIndex does
+    }
+  }
+  ctx._ix[col] = m;
+  return m;
+}
+function _lookupRow(ctx, col, val) {
+  var v = String(val === undefined || val === null ? '' : val).trim();
+  if (v === '') return -1;
+  var hit = _rowIndexBy(ctx, col)[v];
+  return hit === undefined ? -1 : hit;
+}
+
 function _findRowIndex(ctx, col, val) {
   var ci = ctx.idx[col]; if (ci === undefined) return -1;
   var target = String(val).trim();
@@ -188,9 +213,12 @@ function applyDispute(a) {
     claim_amount: (a.claim_amount === '' || a.claim_amount == null) ? '' : a.claim_amount,
     claim_zonal_amount: (a.claim_zonal_amount === '' || a.claim_zonal_amount == null) ? '' : a.claim_zonal_amount,
     claim_rfq_id: _s(a.claim_rfq_id),
-    /* An RTO trip pays nothing whatever its scope, so claiming a KM or an amount on one is implicitly a
-       claim that it was NOT an RTO. challan_type_final is the ONLY lever that clears RTO — without this
-       field an upheld amount/KM dispute on an RTO trip is a no-op. */
+    /* On a REGULAR trip an RTO pays nothing, so claiming a KM or an amount on one is implicitly a claim
+       that it was NOT an RTO, and challan_type_final is the ONLY lever that clears RTO — without this
+       field an upheld KM dispute on a Regular RTO trip is a no-op.
+       On an ADHOC trip this no longer applies: since 2026-09-08 an adhoc RTO trip is paid its amount,
+       so an amount dispute on one is a plain amount dispute and must NOT drag the RTO marking with it.
+       index.html only attaches claim_challan_type for non-adhoc rows for that reason. */
     claim_challan_type: _s(a.claim_challan_type),
     claim_contract_id: _s(a.claim_contract_id), vendor_description: _s(a.vendor_description),
     proof_url: _s(a.proof_url), callback_number: _s(a.callback_number),
@@ -237,9 +265,40 @@ function _upsertStatusView(o) {
  * leave this unused. Otherwise call transferReadyTrips() to transfer trips past their review deadline:
  * stamps sent_to_vendor_flag/timestamp and appends a Ground_Confirmation_Log row.
  * ============================================================================================ */
-function transferReadyTrips() {
+/* ==================================================================================================
+ * WHICH TRIPS ARE HELD BACK FROM VENDORS  (added 2026-08-27)
+ *
+ * Adhoc trips and RTO trips are not ready for vendor confirmation, so the scheduled run does not
+ * transfer them. Menu 4 stays UNFILTERED on purpose — it is the manual release valve.
+ *
+ * It delegates to _classifyTrip rather than testing the raw cells, and that is the whole point:
+ *
+ *  - "Adhoc" then means what it means everywhere else — billing_type_final on local, ignored on
+ *    zonal, billing_type_system otherwise. A ground reclassification to Adhoc is held too, which a
+ *    raw billing_type_system test would have missed.
+ *  - "RTO" means challan_type_final || challan_type starting with "rto", case-insensitively, plus the
+ *    zero-km fallback limb. On the live sheet the value is stored **`RTO only`** with a lowercase o —
+ *    an exact-match test on "RTO Only" matches 0 of 3,911 rows and the filter would silently do
+ *    nothing. startsWith also deliberately does NOT catch `Forward + RTO` (1,805 rows), because the
+ *    classifier does not treat those as RTO either: they carry payable KM and must reach the vendor.
+ *
+ * So the script, the panel and the billing MIS cannot disagree about what they are holding back.
+ * Returns the reason ('Adhoc' | 'RTO') or '' to transfer. Live split: 318 Adhoc, 146 RTO, 13 both.
+ * ============================================================================================== */
+function _holdFromVendor(t) {
+  var x = _classifyTrip(t, {}, 'Regular');
+  if (x.isAdhoc) return 'Adhoc';
+  if (x.rto)     return 'RTO';
+  return '';
+}
+
+/* opts.skip — optional fn(rowObject) -> reason string ('' = transfer). Passing it is the ONLY
+ * difference between the scheduled run and menu 4; there is deliberately no second copy of this
+ * function, because a duplicated transfer path is how the two would drift. */
+function transferReadyTrips(opts) {
+  opts = opts || {};
   var ctx = _ctx(TABS.tripLevel, 'trip_id');
-  var now = new Date(), moved = 0;
+  var now = new Date(), moved = 0, held = {}, heldTotal = 0;
   var _cv = _readTab('Contract_Vehicles', 'contract_id');
   var defBy = {};   // contract_id -> { vehicle_number: true }  (default / contracted vehicles)
   _cv.forEach(function (v) { var cd = _s(v.contract_id); (defBy[cd] = defBy[cd] || {})[_s(v.vehicle_number)] = true; });
@@ -250,6 +309,15 @@ function transferReadyTrips() {
     var rv = ctx.values[i];
     if (!_s(rv[ctx.idx['trip_id']])) continue;
     if (_yes(rv[ctx.idx['sent_to_vendor_flag']])) continue;          // already transferred
+
+    /* Held trips are skipped BEFORE anything is written, so a held row is left byte-for-byte alone —
+       no ground_review_deadline, no log row, no dispute window. It stays eligible forever, and menu 4
+       (which passes no skip fn) will transfer it whenever someone decides to release it. */
+    if (opts.skip) {
+      var _rowObj = {}; ctx.headers.forEach(function (h, k) { if (h) _rowObj[h] = rv[k]; });
+      var _why = opts.skip(_rowObj);
+      if (_why) { held[_why] = (held[_why] || 0) + 1; heldTotal++; continue; }
+    }
 
     // ground_review_deadline = trip_end_time + GROUND_WINDOW_HOURS (derive + persist if engine didn't set it)
     var dl = _toDate(rv[ctx.idx['ground_review_deadline']]);
@@ -341,7 +409,12 @@ function transferReadyTrips() {
     _setCell(ctx, i, 'sent_to_vendor_flag', 'Yes');                 // flag LAST → marks the trip transferred
     moved++;
   }
-  return 'Transferred ' + moved + ' trip(s) to vendor.';
+  var _msg = 'Transferred ' + moved + ' trip(s) to vendor.';
+  if (heldTotal) {
+    _msg += ' Held back ' + heldTotal + ' (' + Object.keys(held).sort().map(function (k) {
+      return held[k] + ' ' + k; }).join(', ') + ') \u2014 release with menu 4.';
+  }
+  return _msg;
 }
 
 
@@ -543,8 +616,8 @@ function applyResolutionsFromSheet() {
 
     /* trip_id first, then row_id. The fallback is not hypothetical: one live dispute row carries the
        row_id (with its _R suffix) in the trip_id column and matches no Trip_Level trip_id at all. */
-    var tr = _findRowIndex(tl, 'trip_id', tripId);
-    if (tr < 0) tr = _findRowIndex(tl, 'row_id', val(i, 'row_id') || tripId);
+    var tr = _lookupRow(tl, 'trip_id', tripId);
+    if (tr < 0) tr = _lookupRow(tl, 'row_id', val(i, 'row_id') || tripId);
     if (tr < 0) {
       notes.push('NO TRIP ROW for ' + did + ' \u2014 trip_id "' + tripId + '", row_id "'
         + val(i, 'row_id') + '" match no Trip_Level row. The resolution cannot be applied.');
@@ -634,13 +707,22 @@ function scheduledDrainSync() {
 
 /** Turn ON auto-apply: time trigger running scheduledDrainSync every 10 min (replaces any sync-only trigger). */
 function createDrainSyncTrigger() {
+  var _killedFiltered = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
     if (h === 'scheduledDrainSync' || h === 'syncToUpstash') ScriptApp.deleteTrigger(t);
+    /* The two schedules are mutually exclusive BY CONSTRUCTION, in both directions. This one
+       transfers with no filter, so leaving the 14:30/18:30/22:30/03:30 job installed would mean adhoc
+       and RTO trips reach vendors within ten minutes anyway, and the filter would look broken rather
+       than off. */
+    if (h === 'scheduledFilteredDrainSync') { ScriptApp.deleteTrigger(t); _killedFiltered++; }
   });
   ScriptApp.newTrigger('scheduledDrainSync').timeBased().everyMinutes(10).create();
   scheduledDrainSync();
-  return 'Auto-apply is ON — vendor actions drain + sync automatically every 10 min. Use "Stop auto-apply" to turn off.';
+  return 'Auto-apply is ON — vendor actions drain + sync automatically every 10 min. Use "Stop auto-apply" to turn off.'
+    + (_killedFiltered ? ('\n\nNOTE: this REPLACED the filtered 14:30/18:30/22:30/03:30 schedule ('
+        + _killedFiltered + ' trigger(s) removed). Auto-apply transfers Adhoc and RTO trips to vendors '
+        + 'as well — if you wanted them held back, turn this off and use "6a" instead.') : '');
 }
 function createDrainSyncFromMenu() { SpreadsheetApp.getUi().alert(createDrainSyncTrigger()); }
 
@@ -657,25 +739,25 @@ function createDrainSyncFromMenu() { SpreadsheetApp.getUi().alert(createDrainSyn
  *
  * The guard is now conditional, so this cannot recur. This function cleans up what it already cost.
  *
- * WHAT IT DOES.  For every Disputes_Log row that is Resolved and carries at least one resolved_*
- * value, it writes that value into its destination column on Trip_Level if the destination does not
- * already hold it. Idempotency is by COMPARING VALUES, not by a timestamp — so it is safe to run
- * repeatedly and it deliberately ignores resolved_at, which is the very thing that blocked the
- * original write.
+ * IT IS READ-ONLY, AND THAT IS DELIBERATE.  It once had an apply mode. It no longer does, because
+ * the fixed applyResolutionsFromSheet() already performs exactly the same repair on every run: with
+ * resolved_at demoted from a skip to a one-time-side-effects gate, each pass reconciles every Resolved
+ * dispute against Trip_Level. Run on the same stamped-but-unwritten fixture, the two produced a
+ * byte-identical Trip_Level, the same three cell writes, and zero status upserts from either
+ * (testkit/_kmresolvetest.js §3b pins that equivalence). Keeping a second function able to write the
+ * same cells only creates two mappings that can drift apart.
  *
- * WHAT IT DOES NOT DO.  It never touches vendor_status. A trip the vendor already accepted stays
- * Reconfirmed — the vendor accepted this correction, so applying its number is the fix, not a reason
- * to reopen the trip. It never writes a system column (total_trip_km, adhoc_amount) and never
- * resurfaces a trip to the vendor.
+ * So this is now the AUDIT: "is anything out of sync, and by how much?", answerable at any time
+ * without touching the sheet. To actually apply what it finds, run menu 4 (or wait for the scheduled
+ * run) — one write path, not two.
+ *
+ * It ignores resolved_at entirely, which is the whole point: that column is what hid the original
+ * problem. A row it reports as out of sync will be corrected by the very next applier run.
  *
  * JOIN.  trip_id first, then row_id. The fallback is not theoretical: one live dispute row carries the
  * row_id (with its _R suffix) in the trip_id column, so it matches no Trip_Level trip_id at all.
- *
- * USAGE.  repairMissedResolutions()      -> DRY RUN, reports what it would change, writes nothing.
- *         repairMissedResolutions(true)  -> applies.
- * The menu item runs the dry run and then asks before applying.
  * ============================================================================================== */
-function repairMissedResolutions(apply) {
+function repairMissedResolutions() {
   var dl = _ctx(LOG_TABS.disputes, 'dispute_id');
   var tl = _ctx(TABS.tripLevel, 'trip_id');
   var val = function (row, c) { return dl.idx[c] !== undefined ? _s(dl.values[row][dl.idx[c]]) : ''; };
@@ -703,7 +785,7 @@ function repairMissedResolutions(apply) {
   };
 
   var scanned = 0, repaired = 0, alreadyOk = 0, noTripRow = 0, noValues = 0, missingCol = {};
-  var writes = 0, lines = [], kmDelta = 0, byOracle = {};
+  var lines = [], kmDelta = 0, byOracle = {};
 
   for (var i = dl.headerRow + 1; i < dl.values.length; i++) {
     var did = val(i, 'dispute_id'); if (!did) continue;
@@ -738,21 +820,20 @@ function repairMissedResolutions(apply) {
         byOracle[orc] = (byOracle[orc] || 0) + 1;
       }
       changed.push(dest + ': ' + (cur === '' ? '<blank>' : cur) + ' -> ' + v);
-      if (apply) { _setCell(tl, tr, dest, v); writes++; }
     });
 
     if (!had) { noValues++; continue; }
     if (!changed.length) { alreadyOk++; continue; }
     repaired++;
-    lines.push((apply ? 'FIXED  ' : 'WOULD FIX  ') + did + '  (' + (isZonal ? 'zonal' : 'local')
+    lines.push('OUT OF SYNC  ' + did + '  (' + (isZonal ? 'zonal' : 'local')
       + ', matched on ' + via + ', trip ' + tval(tr, 'trip_id') + ', vendor_status '
       + tval(tr, 'vendor_status') + ')  ' + changed.join(' | '));
   }
 
-  var head = (apply ? 'REPAIR APPLIED' : 'REPAIR DRY RUN — nothing written')
+  var head = 'RESOLUTION SYNC CHECK — read-only, nothing was written'
     + '\n  Resolved disputes scanned : ' + scanned
-    + '\n  ' + (apply ? 'Rows repaired           : ' : 'Rows that would change  : ') + repaired
-    + '\n  Cells written           : ' + writes
+    + '\n  Rows OUT OF SYNC        : ' + repaired
+    + (repaired ? '   <-- run menu 4 (or wait for the scheduled run) to apply these' : '')
     + '\n  Already correct         : ' + alreadyOk
     + '\n  Resolved but no values  : ' + noValues
     + '\n  No Trip_Level row       : ' + noTripRow
@@ -768,16 +849,115 @@ function repairMissedResolutions(apply) {
   return msg;
 }
 
-/** Menu: dry run, show it, then ask before applying. */
+/** Menu: report only. Applying is menu 4's job — one write path. */
 function repairMissedResolutionsFromMenu() {
-  var ui = SpreadsheetApp.getUi();
-  var dry = repairMissedResolutions(false);
-  var head = dry.split('\n\n')[0];
-  var r = ui.alert('Repair missed resolutions — DRY RUN', head
-    + '\n\n(Full detail is in Extensions > Apps Script > Executions.)\n\nApply these changes now?',
-    ui.ButtonSet.YES_NO);
-  if (r !== ui.Button.YES) { ui.alert('Nothing applied.'); return; }
-  var done = repairMissedResolutions(true);
-  var s = (typeof syncToUpstash === 'function') ? syncToUpstash() : '(sync skipped)';
-  ui.alert(done.split('\n\n')[0] + '\n\n' + s);
+  var r = repairMissedResolutions();
+  SpreadsheetApp.getUi().alert('Resolution sync check', r.split('\n\n')[0]
+    + '\n\n(Row-by-row detail is in Extensions > Apps Script > Executions.)', SpreadsheetApp.getUi().ButtonSet.OK);
 }
+
+
+/* ==================================================================================================
+ * SCHEDULED RUN — 14:30 / 18:30 / 22:30 / 03:30 IST, everything menu 4 does, minus Adhoc and RTO
+ *
+ * Same four steps as drainAndSyncFromMenu, in the same order, with ONE difference: the transfer step
+ * is given the _holdFromVendor filter, so adhoc and RTO trips are not sent to vendors. Everything
+ * else — draining vendor confirms and disputes, applying resolutions, pushing the Upstash snapshot —
+ * is identical, because it is the same four function calls.
+ *
+ * Nothing about a held trip changes: no cell is written, so it stays eligible and menu 4 (unfiltered)
+ * transfers it whenever someone decides to. The admin view already shows it, and now says why.
+ * ============================================================================================== */
+var SCHEDULED_HOURS_IST = [14, 18, 22, 3];     // :30 past each — see the nearMinute note below
+var SCHEDULED_MINUTE    = 30;
+
+function scheduledFilteredDrainSync() {
+  var t = '', d = '', r = '', s = '';
+  /* Each step is caught separately and on purpose: a failure in one must not cost the others. In
+     particular the sync runs even if a transfer threw, so the panel never goes stale behind a bug. */
+  try { t = transferReadyTrips({ skip: _holdFromVendor }); } catch (e) { t = 'TRANSFER FAILED: ' + e.message; }
+  try { d = drainActions(); }                               catch (e) { d = 'DRAIN FAILED: ' + e.message; }
+  try { r = applyResolutionsFromSheet(); }                  catch (e) { r = 'RESOLUTIONS FAILED: ' + e.message; }
+  try { s = (typeof syncToUpstash === 'function') ? syncToUpstash() : '(sync skipped)'; }
+  catch (e) { s = 'SYNC FAILED: ' + e.message; }
+  var msg = 'Scheduled run ' + Utilities.formatDate(new Date(), _tz(), 'yyyy-MM-dd HH:mm')
+    + '\n  ' + t + '\n  ' + d + '\n  ' + r + '\n  ' + s;
+  Logger.log(msg);
+  return msg;
+}
+
+/** Menu: run the scheduled job by hand, exactly as the trigger would, and show the result. */
+function runScheduledFilteredNow() { SpreadsheetApp.getUi().alert(scheduledFilteredDrainSync()); }
+
+/* --------------------------------------------------------------------------------------------------
+ * Installing the four daily triggers.
+ *
+ * TIMEZONE. Clock triggers fire in the APPS SCRIPT PROJECT timezone, which is NOT the spreadsheet's
+ * timezone and is not what _tz() returns. A project left on America/Los_Angeles would run these
+ * 12.5 hours out. This refuses to install unless the project is on IST, and names the fix.
+ *
+ * PRECISION. Apps Script has no exact-minute recurring trigger. atHour(h).nearMinute(30) is the
+ * closest it offers and Google fires it within about 15 minutes of the stated time — so expect
+ * roughly 14:15-14:45 rather than 14:30 exactly. If a run must land on an exact minute, the only way
+ * is an every-15-minutes trigger that returns early unless the clock is inside the target window, at
+ * the cost of 96 wake-ups a day. Not worth it for a job that is idempotent anyway.
+ *
+ * CONFLICT. createDrainSyncTrigger() ("6 · Turn ON auto-apply") installs scheduledDrainSync every 10
+ * minutes, and that one calls transferReadyTrips() with NO filter. Leaving it on would send the very
+ * adhoc and RTO trips this job holds back, within ten minutes, every time. So it is removed here, and
+ * createDrainSyncTrigger now removes these in turn — the two schedules are mutually exclusive by
+ * construction rather than by anyone remembering.
+ * ------------------------------------------------------------------------------------------------ */
+function createScheduledFilteredTriggers() {
+  var tz = Session.getScriptTimeZone();
+  if (tz !== 'Asia/Kolkata') {
+    return 'REFUSED — this Apps Script project\'s timezone is "' + tz + '", not Asia/Kolkata, and clock '
+      + 'triggers fire in the PROJECT timezone (not the spreadsheet\'s). The times would be wrong by '
+      + 'hours. Fix it first: Apps Script editor > Project Settings > Time zone > (GMT+05:30) India '
+      + 'Standard Time, then run this again.';
+  }
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (tr) {
+    var h = tr.getHandlerFunction();
+    if (h === 'scheduledFilteredDrainSync' || h === 'scheduledDrainSync' || h === 'syncToUpstash') {
+      ScriptApp.deleteTrigger(tr); removed++;
+    }
+  });
+  SCHEDULED_HOURS_IST.forEach(function (h) {
+    ScriptApp.newTrigger('scheduledFilteredDrainSync').timeBased()
+      .everyDays(1).atHour(h).nearMinute(SCHEDULED_MINUTE).create();
+  });
+  return 'Scheduled run is ON — ' + SCHEDULED_HOURS_IST.map(function (h) {
+      return (h < 10 ? '0' : '') + h + ':' + SCHEDULED_MINUTE; }).join(', ')
+    + ' IST daily (Google fires within ~15 min of each).\n\n'
+    + 'It transfers every trip EXCEPT Adhoc and RTO, then drains vendor actions, applies resolutions '
+    + 'and syncs the panel.\n\n'
+    + (removed ? ('Removed ' + removed + ' conflicting trigger(s), including the 10-minute auto-apply '
+        + '— that one transfers WITHOUT the filter, so the two cannot both run.\n\n') : '')
+    + 'Held-back trips are untouched and stay eligible: use "4 · Apply vendor actions NOW" to release '
+    + 'them. The admin view lists them with the reason.';
+}
+function createScheduledFilteredFromMenu() { SpreadsheetApp.getUi().alert(createScheduledFilteredTriggers()); }
+
+/** Turn the scheduled run OFF, leaving any other trigger alone. */
+function stopScheduledFilteredTriggers() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (tr) {
+    if (tr.getHandlerFunction() === 'scheduledFilteredDrainSync') { ScriptApp.deleteTrigger(tr); n++; }
+  });
+  return n ? ('Scheduled run is OFF — removed ' + n + ' trigger(s). Nothing transfers or syncs on its '
+    + 'own now.') : 'The scheduled run was not on.';
+}
+function stopScheduledFilteredFromMenu() { SpreadsheetApp.getUi().alert(stopScheduledFilteredTriggers()); }
+
+/** What is actually installed right now — the answer to "is it running?". */
+function showTriggerStatus() {
+  var rows = ScriptApp.getProjectTriggers().map(function (tr) {
+    return '  ' + tr.getHandlerFunction() + '  (' + tr.getEventType() + ')';
+  });
+  return 'Apps Script project timezone: ' + Session.getScriptTimeZone()
+    + (Session.getScriptTimeZone() === 'Asia/Kolkata' ? '' : '   <-- NOT IST, clock triggers will be wrong')
+    + '\nSpreadsheet timezone: ' + _tz()
+    + '\n\nInstalled triggers (' + rows.length + '):\n' + (rows.join('\n') || '  none');
+}
+function showTriggerStatusFromMenu() { SpreadsheetApp.getUi().alert(showTriggerStatus()); }

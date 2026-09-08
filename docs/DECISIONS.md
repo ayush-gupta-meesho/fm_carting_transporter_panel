@@ -783,3 +783,312 @@ Joins `trip_id` then `row_id`, because one live dispute row carries the row_id i
 ### Suite
 
 13 harnesses / 690 assertions → **15 / 802**. New: `_kmresolvetest.js` (56), `_resolveduitest.js` (26).
+
+---
+
+## 2026-08-27 (b) — Scheduled run 14:30/18:30/22:30/03:30 IST, and menu 5a becomes read-only
+
+Full write-up: `docs/SCHEDULED_RUN_2026-08-27.md`.
+
+**The filter as literally requested would have matched nothing.** `challan_type` is stored as
+**`RTO only`** (lowercase o) on 145 rows plus one bare `RTO`; the requested `'RTO Only'` matches
+**0 of 3,911**. The filter would have run, reported success, and held back nothing. Recorded because
+this is the third time an exact-string assumption about this sheet has been wrong — after the
+`fixed_monthly_value(15days)` header and the `dd-mm-yyyy` date text.
+
+### Decisions
+
+**1. The hold rule delegates to `_classifyTrip`, never to raw cells.** `isAdhoc` and `rto` then mean
+what they mean in the panel and the MIS. Consequences that fall out of that and are wanted: a ground
+reclassification to Adhoc is held on Local but ignored on Zonal (rule iii, for free); the zero-km RTO
+limb is included; and **`Forward + RTO` (1,805 rows) is NOT held**, because the classifier does not
+call it RTO and those trips carry payable KM.
+
+**2. Adhoc OR RTO, not AND.** 451 rows (11.5%) vs 13 (0.3%). Confirmed with the user against the live
+counts before writing anything.
+
+**3. One transfer function, with an optional `opts.skip` predicate — not a copy.** Menu 4 passes
+nothing and stays unfiltered; it is the manual release valve. A duplicated `transferReadyTrips` is how
+the scheduled path and the manual path would drift apart.
+
+**4. A held trip is skipped BEFORE any write.** Not one cell, no `ground_review_deadline`, no log row.
+It stays eligible forever, so "release it later with menu 4" is true by construction rather than by
+convention.
+
+**5. A held backlog must never be silent.** It surfaces in the run report, the admin header count, and
+a `Held · Adhoc` chip that is counted *apart from* genuinely-not-yet-sent trips — otherwise a
+deliberate hold and a bug look identical.
+
+**6. The two schedules are mutually exclusive by construction, in both directions.** `6` (10-min
+auto-apply) transfers unfiltered, so it would undo the filter within ten minutes. Each installer now
+removes the other and says so.
+
+### Two Apps Script facts worth not rediscovering
+
+- **Clock triggers fire in the PROJECT timezone, not the spreadsheet's.** Different settings; `_tz()`
+  returns the spreadsheet's and is no guide. The installer refuses unless the project is
+  `Asia/Kolkata`, and `7b` prints both.
+- **There is no exact-minute recurring trigger.** `nearMinute(30)` fires within ~15 minutes. The only
+  exact alternative is an every-15-min trigger gated on the clock — 96 wake-ups a day. Not taken.
+
+### Menu 5a is now read-only, on evidence
+
+`repairMissedResolutions(true)` and `applyResolutionsFromSheet()` were run over the same
+stamped-but-unwritten fixture and compared: **byte-identical `Trip_Level`, the same three cell writes,
+zero status upserts from either.** The 27 Aug guard change made the applier self-healing, so it already
+performs the repair — four times a day now. A second function able to write the same cells is only a
+second mapping that can drift.
+
+So the apply mode is gone; 5a is the audit ("is anything out of sync, and by how much?"), still
+ignoring `resolved_at`, still naming a missing column rather than reporting a false all-clear.
+**It can be deleted outright once the 166-row backlog clears.** The equivalence test
+(`_kmresolvetest.js §3b`) stays either way — it is what would catch the applier regressing.
+
+**Rule that follows: before keeping a tool "just in case", run it against the thing that replaced it
+and diff the result.** Redundancy that is asserted is a guess; redundancy that is measured is a fact.
+
+### Performance
+
+`applyResolutionsFromSheet` now visits every Resolved dispute on every run, so its `_findRowIndex`
+linear scan became O(disputes × trips) — 167 × 3,911 today, both growing daily. Added `_lookupRow` /
+`_rowIndexBy`, a per-column index cached on the ctx, making it O(disputes + trips). Same semantics:
+trimmed string equality, first row wins.
+
+### Suite
+
+15 harnesses / 802 → **16 / 868**. New: `_scheduledtest.js` (64).
+
+
+---
+
+## 2026-09-04 — Placement failure becomes a deduction line, and it is the pro-rating
+
+New `Placement Failure` tab in the panel sheet, read by `Billing.gs` and shown on the vendor MIS.
+Full write-up: `docs/PLACEMENT_FAILURE_2026-09-04.md`.
+
+### Decisions
+
+**1. The deduction IS the pro-rating, shown as a line — not a charge on top of it.**
+`active_days` and `monthly_rate` stay at their full period values and this line is the only reduction.
+Doing both takes the same days twice: on Bharat's five real failures, ₹36,000 paid against ₹45,000
+owed. The MIS reads *full amount → less placement failure → net*, so the vendor can see why the figure
+moved. This settles the open question left on 27 Aug about whether losing the day was also a penalty:
+**it is not a penalty, it is simply not being paid for work not done.** If deterrence is wanted, it
+has to come from the scorecard, as a separate commercial term.
+
+**2. The grain is (date, oracle, vehicle_size, pegged_km_slab, hours_slab) — no vehicle_number.**
+Which physical vehicle fills a slot is not fixed, so LH record the shape of what was missing rather
+than a plate. Pricing does not need the plate: every vehicle on the same slab in one contract carries
+the same rate. The cost of dropping it is that two identical failures on one day are
+indistinguishable from a paste error — handled by a `vehicles_failed` count and a **BLOCK** on a
+duplicate key rather than a silent sum.
+
+**3. `hours_slab` is mandatory.** Oracle 19434 has a 12hr and a 24hr 7 FT contract on identical dates,
+both carrying 1,500 km vehicles, at ₹23,500 and ₹38,000 per vehicle. Without the hours the engine
+would be guessing at ₹967 a day of a vendor's money. It refuses instead.
+
+**4. Anything that cannot be priced BLOCKS the MIS.** Three gates. Deducting nothing and carrying on
+would make an unpenalised no-show and a mistyped row look identical.
+
+**Rule that follows: the unit is the vehicle-day, not the contract-day.** A 2-vehicle × 15-day
+contract is 30 vehicle-days; five failures leave 25 of 30, not 10 of 15. The first draft of the test
+got this wrong and the test caught it — worth remembering because it only shows up once a contract has
+more than one vehicle.
+
+### The date format, for the third time
+
+`_toDate()` reads `dd-mm-yyyy` text as `mm-dd-yyyy` whenever the day is ≤ 12 — `_toDate('05-08-2026')`
+returns **May**. On a tab that moves money, a silently wrong month is worse than a refused row, so
+`_pfDate()` names and rejects that format rather than parsing it. The table LH sent is entirely
+`dd-mm-yyyy` text, so every row of it refuses as-is. That is the guard working.
+
+**Standing rule now recorded: any new money-bearing tab gets a strict date reader, not `_toDate`.**
+
+### Live findings from the first 21 rows
+
+18 price cleanly at **₹31,533.57**; 3 refuse. Notable: **Logistics link failed 7 of its 10 contracted
+vehicle-days**, ₹10,967 of a ₹15,667 contract — a commercial matter, not a billing one. And
+`MUM7-20271-20260822-31` contradicts itself three ways (Contract_Info 23–25 Aug, contract_id 22–31,
+vehicle row 22–31 with active_days 10); agreed that **22–31 Aug is right and Contract_Info is wrong**.
+
+### Suite
+
+16 harnesses / 868 assertions → **17 / 921**. New: `_pftest.js` (53).
+
+---
+
+## 2026-09-04 · Plate warnings: what they cost, and what to stop worrying about
+
+**Context.** The MIS pre-flight raised two plate warnings. Both were overstated in the first write-up.
+Ground's input closed it: vendors work an aggregator model and hire from the open market, so the same
+plate can legitimately appear under two vendors. Three audits (`testkit/audit/`) settle the money.
+
+**Decision 1 — the look-alike plate warning is cosmetic. Never hold an MIS for it.**
+All 1,155 Regular non-default (replacement) trips / 82,742 km fold onto a plate that is genuinely on
+the contract. Unattributed KM is **zero for every vendor**. `replaced_default_vehicle` does the work;
+no KM is lost and none is created. 36 trips / 2,907 km fold into a plate within two characters of the
+one that ran — the same vehicle mis-keyed, folding back onto itself. That is a data-quality nit on the
+MIS replacement line, not a money or attribution problem. The earlier "1,272 km stranded" framing was
+wrong and is retracted.
+
+**Decision 2 — KM follows `contract_id`, never the plate. This is deliberate and stays.**
+Trips are bucketed by the trip's own `contract_id`, and a fold is only valid inside that contract's
+default set. Whoever was *engaged* is billed. In an aggregator model the plate is not identity — the
+contract is — so a shared plate must not move money by itself.
+
+**Decision 3 — the exposure is excess KM, and only where a contract is already over slab.**
+`excessKm = max(0, regKm - slabCV)`, so a contract with headroom absorbs a mis-attributed trip for
+₹0 and one over slab charges every km of it.
+
+| | excess-KM charge, all contracts |
+|---|---:|
+| as billed today | ₹80,514 |
+| if KM followed the plate | ₹93,618 |
+| **exposure** | **₹13,104** |
+
+- **Rajkot (Krushiv ↔ Shivay, 4,352 km): ₹0 either way** — every affected contract has 1,076–16,491 km
+  of headroom. Records question only. **Send those MIS.**
+- **Mumbai (Yah Yah ← Buraq, 1,638 km on `MH04LQ7801`): ₹13,104.** Buraq's `MUM7-18764-20260820-31` is
+  already 356 km over its 1,200 km slab; Yah Yah has 1,453 km free. **Confirm with ground who was
+  engaged before sending either MIS.**
+
+**Decision 4 — no plate is a contracted vehicle of two vendors, and it must stay that way.**
+Zero shared plates in `Contract_Vehicles`, zero overlapping vehicle periods. The expensive failure mode
+— **two fixed charges for one physical vehicle** — does not exist today, and it is the one thing the
+aggregator model could actually produce. `xvendor.js` §A is the check; run it before every billing
+cycle, because slab headroom is what is currently hiding the cross-plate KM and headroom shrinks.
+
+**Open for ground.** Four same-plate-same-day collisions, all Rajkot (₹0 today): `GJ03BZ2400` 11 Aug,
+`GJ03CU3010` 13 and 20 Aug, `GJ10TY4219` 18 Aug — each claimed by both Shivay and Krushiv. One vehicle
+cannot serve two 12-hour contracts on one date, so at least one side is mis-keyed. Cleanest evidence to
+hand ground.
+
+---
+
+## 2026-09-08 · Adhoc totals sum `payable`, never `amt` — and the MIS says both
+
+**Context.** Pune Logistics' adhoc total read ₹2,39,260 on the panel and ₹2,50,987 in the MIS. The
+₹11,726.71 gap was four `RTO only` adhoc trips.
+
+**Decision 1 — every adhoc total sums `x.payable`.** `_classifyTrip` returns `amt` (the claim) and
+`payable` (`rto ? 0 : amt`). Anything that adds up money uses `payable`. The MIS was summing `amt` in
+the per-contract path *and* in the orphan bucket; both now use `payable`. The panel was already
+correct and needed no change.
+
+**Decision 2 — a zero is shown next to its claim, never on its own.** The Adhoc tab went from 10 to 11
+columns so **Claimed** and **Payable** are separate. An RTO row reads ₹3,162.95 claimed / ₹0 payable,
+payable in red, with a footnote naming the dispute reason to use. Silently zeroing an amount, or
+dropping the line, would trade an over-payment for an argument.
+
+**Decision 3 — where the panel and the MIS disagree on money, the panel is the reference.** The vendor
+has already confirmed against the panel. The MIS is the newer surface and is the one to suspect. This
+is the second time that has held (the first was the resolved-KM columns).
+
+**Decision 4 — an amount must never be resolved into `resolved_challan_type`.** Four disputes were
+resolved on 03 Sep with the amount typed into the challan-type column and `resolved_amount` left blank.
+It *worked* — a number does not `startsWith('rto')`, so the RTO flag lifted and the trips became
+payable — which is exactly why it is dangerous: the intended outcome was reached by accident, the
+column now holds `"3000"` where a vendor expects a challan type, and each trip pays its original
+system amount rather than the resolved one (₹120.25 short of Sharan's figures, ₹4,923.25 short of the
+claim). Correct by putting the figure in `resolved_amount` and `Forward Only` in
+`resolved_challan_type`, then re-running menu 4.
+
+**Guardrail.** `testkit/_adhocrtotest.js` — 27 assertions, two of them parity assertions (panel adhoc
+sum === MIS adhoc total over the same rows), plus a non-vacuity check that reproduces the old gap.
+Suite: **967 assertions across 18 harnesses.**
+
+**Live effect.** 11 trips, ₹31,746 of over-billing removed: Pune Logistics ₹2,50,987 → ₹2,39,260
+(payable ₹3,56,097 → ₹3,44,370) and Ajay Enterprise ₹1,54,180 → ₹1,34,160 (payable ₹7,04,287 →
+₹6,84,267). No other vendor affected.
+
+---
+
+## 2026-09-08 · Adhoc RTO is payable. Regular RTO is not. (supersedes the ONE RTO RULE)
+
+**Context.** Pune Logistics read ₹2,39,260 on the panel and ₹2,50,987 in the MIS. The ₹11,726.71 gap
+was four RTO-only adhoc trips: the panel summed `payable` (0), the MIS summed `amt`. The first instinct
+was to pull the MIS down to the panel. The right answer was the opposite — the *rule* was wrong.
+
+**Decision 1 — the RTO rule has two arms, replacing the blanket "an RTO trip pays nothing".**
+
+| the trip | RTO effect |
+|---|---|
+| Regular, either scope, replacement included | pays nothing, no KM to the slab |
+| Adhoc, either scope | **paid its full `adhoc_amount`** |
+
+An RTO-only adhoc run is still a vehicle hired for a job, so it earns its trip amount. Zonal is included
+— one rule, both scopes.
+
+**Decision 2 — the amount is the full `adhoc_amount`, not a reduced RTO rate.** No new rate table, no
+new config constant, nothing to gate on a missing rate.
+
+**Decision 3 — the change is ONE LINE, in the shared classifier.** `isAdhoc` is now tested before `rto`
+in `_classifyTrip`. Because the panel and the MIS both read that function, they move together by
+construction. Fixing the MIS's summation instead would have left two places that each decide this
+question — which is what produced the gap.
+
+**Decision 4 — a paid RTO trip stays marked RTO.** The challan type is a fact about the run, not a
+payment switch. This is the substance of the change: ops had been lifting the RTO marking through
+dispute resolution to release adhoc money, and that workaround is what put a rupee figure into
+`resolved_challan_type` on four rows on 03 Sep. Paying by rule removes the reason to touch the column.
+
+**Decision 5 — the panel must stop attaching `claim_challan_type` to adhoc RTO disputes.** It used to
+attach `Forward Only` to *every* RTO dispute, so an adhoc vendor disputing an amount silently also
+claimed the trip was not an RTO. Now scoped to non-adhoc. Easy to miss when reviewing only `Code.gs`.
+
+**Decision 6 — for a part-run on a Regular RTO trip, prefer flipping to Adhoc over lifting the challan.**
+`resolved_billing_type = Adhoc` + `resolved_amount` pays the agreed figure and keeps the record truthful
+about what the vehicle did. Lifting the challan rewrites the run itself. Runbook updated accordingly.
+
+**Decision 7 — the four mis-resolved rows are corrected to `resolved_challan_type = RTO only`.** Verified
+money-neutral: ₹12,276.75 before and after, because they were already being paid off the junk value.
+Right by accident becomes right by construction.
+
+**Live effect.** 11 trips, ₹31,746.03 — Ajay Enterprise ₹20,019.32 (7 trips), Pune Logistics ₹11,726.71
+(4 trips). MIS totals do not move; the **panel** rises to meet them. Panel-vs-MIS adhoc disagreement is
+now **0 of 16 vendors**. 169 Regular RTO trips carrying 9,273.5 real KM stay at zero.
+
+**Guardrails.** `testkit/_adhocrtotest.js` (25 assertions, including the panel↔MIS parity assertion and
+a non-vacuity check reproducing the live gap). Six harnesses that asserted the old rule were rewritten,
+not deleted — notably `_matrixtest`, whose independent 12,960-combination spec oracle re-validates the
+whole classifier, and `_rtotest`, which keeps the Regular arm in its old form directly above the new
+Adhoc arm so the diff between the two blocks is the rule change. Suite: **981 assertions, 18 harnesses.**
+
+**Note on process.** The previous session's fix — pulling the MIS down to the panel — was tested, green,
+and wrong, because it encoded an assumption about intent that was never checked. Where the panel and the
+MIS disagree on money, one of them is wrong; which one is a commercial question, not a code question.
+
+---
+
+## 2026-09-08 · Every MIS writer grows its sheet before writing
+
+**Context.** Generating Krushiv Enterprise's MIS (18838) threw *"The coordinates of the range are
+outside the dimensions of the sheet"*. A new sheet is 1000 × 26; Krushiv's Local tab needs 1,705 rows
+(1,563 local trips). No other vendor exceeds 616, which is why it looked like a one-vendor mystery
+rather than a structural limit.
+
+**Decision 1 — grow the sheet, never trim the output.** The alternative would have been to cap or
+paginate the trip list, but the vendor reconciles line by line and quotes trip ids when disputing, so
+every trip has to be on the sheet. `_vmFit(sh, row, col)` calls `insertRowsAfter` / `insertColumnsAfter`
+as needed.
+
+**Decision 2 — guard in the primitives AND before each bulk write.** `_vmHead`, `_vmHdr`, `_vmBand` and
+`_vmNote` are the funnels every writer advances through, so fitting there covers row-by-row drift
+nobody has to remember. Fitting again before each bulk `setValues` makes the common case exact. Relying
+on either alone would leave a gap.
+
+**Decision 3 — pad by 200 rows.** Growing per row would mean 700+ API calls for Krushiv. Measured
+result: the sheet grows **once**.
+
+**Guardrail.** `testkit/_vmsizetest.js` (14 assertions) supplies a fake Spreadsheet that enforces
+1000 × 26 and throws the production message, then runs the real `_misWriteVendorMis` for every vendor.
+On the pre-fix file against live data it reports **16 of 17 built** and names Krushiv with the exact
+error; after the fix, 17 of 17, deepest row 1,755, grown once. It also asserts its own fake throws
+correctly (or a green run proves nothing), asserts a range past row 1000 was really written, and
+synthesises a 1,400-trip contract if no live vendor is large enough — so it cannot go quiet.
+Suite: **995 assertions, 19 harnesses.**
+
+**Note.** This was a capacity bug, not a billing bug. Worth separating: the two failures found today —
+the adhoc-RTO rule and this — looked similar from the outside (one vendor's MIS is wrong) and had
+nothing in common. The first needed a commercial decision; this one needed four lines and a limit
+nobody had hit yet.
